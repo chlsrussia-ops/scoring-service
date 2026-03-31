@@ -58,12 +58,25 @@ class ScoreResult(BaseModel):
     request_id: str
     source: str
     diagnostics: tuple[str, ...] = ()
-    version: str = "1.0.0"
+    version: str = "2.0.0"
 
 
-class AppError(BaseModel):
+class ReviewDecision(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    code: str
-    message: str
-    request_id: str
+    approved: bool
+    label: str
+    reason: str
+
+
+class ScoreResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    result: ScoreResult
+    review: ReviewDecision
+
+
+class ErrorResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    detail: str

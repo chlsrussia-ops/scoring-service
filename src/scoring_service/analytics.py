@@ -11,11 +11,6 @@ class AnalyticsCollector:
 
     def track(self, event: str, **dimensions: Any) -> None:
         self.counters[event] += 1
-        dim_repr = " ".join(f"{k}={v}" for k, v in sorted(dimensions.items()))
-        if dim_repr:
-            print(f"[ANALYTICS] event={event} {dim_repr}")
-        else:
-            print(f"[ANALYTICS] event={event}")
 
     def snapshot(self) -> dict[str, int]:
         return dict(self.counters)

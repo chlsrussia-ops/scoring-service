@@ -1,5 +1,5 @@
 from scoring_service.config import Settings
-from scoring_service.contracts import ScoreBreakdown, ScoreResult
+from scoring_service.contracts import ReviewDecision, ScoreBreakdown, ScoreResult
 from scoring_service.reviewer import review
 
 
@@ -16,11 +16,6 @@ def _result(score: float, ok: bool = True) -> ScoreResult:
             numeric_sum=0.0,
             text_weight=0.0,
             bonuses={},
-            numeric_fields_count=0,
-            text_fields_count=0,
-            collection_fields_count=0,
-            nested_fields_count=0,
-            bool_true_fields_count=0,
         ),
         request_id="r1",
         source="test",
@@ -29,7 +24,7 @@ def _result(score: float, ok: bool = True) -> ScoreResult:
 
 
 def test_reviewer_approved() -> None:
-    decision = review(_result(55.0), Settings())
+    decision: ReviewDecision = review(_result(55.0), Settings())
     assert decision.approved is True
     assert decision.label == "approved"
 

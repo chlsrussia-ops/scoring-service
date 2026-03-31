@@ -5,11 +5,11 @@ from pydantic import ValidationError as PydanticValidationError
 from scoring_service.analytics import track
 from scoring_service.caps import apply_caps
 from scoring_service.config import Settings
-from scoring_service.contracts import ScoreRequest, ScoreResult
+from scoring_service.contracts import ReviewDecision, ScoreRequest, ScoreResponse, ScoreResult
 from scoring_service.diagnostics import collect_diagnostics, get_logger
 from scoring_service.fallback import fallback_result
 from scoring_service.observability import emit_event, emit_metric
-from scoring_service.reviewer import ReviewDecision, review
+from scoring_service.reviewer import review
 from scoring_service.scoring_engine import compute_breakdown
 
 
@@ -74,18 +74,15 @@ class Executor:
             if self.settings.emit_metrics:
                 emit_metric("score.final", result.final_score, request_id=request.request_id)
                 emit_metric("score.items", float(breakdown.item_count), request_id=request.request_id)
-                emit_metric("score.numeric_sum", breakdown.numeric_sum, request_id=request.request_id)
-                emit_event(
-                    "score.completed",
-                    request_id=request.request_id,
-                    ok=result.ok,
-                    review_label=decision.label,
-                )
+                emit_event("score.completed", request_id=request.request_id, ok=result.ok)
 
             return result, decision
 
         except (ValueError, TypeError, AttributeError, PydanticValidationError) as exc:
-            logger.exception("execution failed request_id=%s", getattr(request, "request_id", "unknown"))
+            logger.exception(
+                "execution failed request_id=%s",
+                getattr(request, "request_id", "unknown"),
+            )
             if not self.settings.fallback_on_error:
                 raise
 
@@ -93,23 +90,18 @@ class Executor:
             decision = review(result, self.settings)
 
             if self.settings.emit_analytics:
-                track(
-                    "score_fallback",
-                    request_id=result.request_id,
-                    source=result.source,
-                    review_label=decision.label,
-                )
+                track("score_fallback", request_id=result.request_id, source=result.source)
 
             if self.settings.emit_metrics:
-                emit_event(
-                    "score.failed",
-                    request_id=result.request_id,
-                    reason=result.reason or "unknown",
-                    review_label=decision.label,
-                )
+                emit_event("score.failed", request_id=result.request_id, reason=result.reason or "unknown")
 
             return result, decision
 
 
 def execute(request: ScoreRequest, settings: Settings) -> tuple[ScoreResult, ReviewDecision]:
     return Executor(settings).execute(request)
+
+
+def execute_response(request: ScoreRequest, settings: Settings) -> ScoreResponse:
+    result, decision = execute(request, settings)
+    return ScoreResponse(result=result, review=decision)

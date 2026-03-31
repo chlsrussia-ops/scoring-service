@@ -1,7 +1,14 @@
-.venv/
 __pycache__/
 *.pyc
-*.egg-info/
+.pytest_cache/
 .mypy_cache/
 .ruff_cache/
-.pytest_cache/
+.venv/
+venv/
+coverage.xml
+.coverage
+dist/
+build/
+*.egg-info/
+.env
+celerybeat-schedule

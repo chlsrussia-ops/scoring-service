@@ -19,7 +19,7 @@ def test_execute_success() -> None:
 
 def test_execute_fallback_on_bad_payload_type() -> None:
     settings = Settings()
-    req = ScoreRequest.model_construct(  # bypass validation intentionally for fallback path
+    req = ScoreRequest.model_construct(
         payload="wrong",  # type: ignore[arg-type]
         request_id="exec-2",
         source="test",

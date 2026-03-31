@@ -1,22 +1,37 @@
 from __future__ import annotations
 
+import json
 import logging
 import sys
-from typing import Iterable
+from datetime import datetime, timezone
+from typing import Any, Iterable
 
 LOGGER_NAME = "scoring_service"
 
 
-def configure_logging(level_name: str = "INFO") -> logging.Logger:
+class JsonFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        payload: dict[str, Any] = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        return json.dumps(payload, ensure_ascii=False)
+
+
+def configure_logging(level_name: str = "INFO", *, json_logs: bool = True) -> logging.Logger:
     logger = logging.getLogger(LOGGER_NAME)
     level = getattr(logging, level_name.upper(), logging.INFO)
 
     if not logger.handlers:
         handler = logging.StreamHandler(sys.stderr)
-        formatter = logging.Formatter(
-            fmt="%(asctime)s | %(levelname)s | %(name)s | %(message)s"
-        )
-        handler.setFormatter(formatter)
+        if json_logs:
+            handler.setFormatter(JsonFormatter())
+        else:
+            handler.setFormatter(
+                logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+            )
         logger.addHandler(handler)
 
     logger.setLevel(level)

@@ -1,26 +1,43 @@
-.PHONY: install check lint format typecheck test run clean
+PYTHON ?= python3
 
-install:
-	python -m pip install -e ".[dev]"
+.PHONY: install-dev fmt lint typecheck test check run api clean docker-build docker-up docker-down
 
-check: lint test
+install-dev:
+	$(PYTHON) -m pip install -U pip
+	$(PYTHON) -m pip install -e ".[dev]"
+
+fmt:
+	ruff format .
+	ruff check . --fix
 
 lint:
 	ruff check .
-
-format:
-	ruff format .
 
 typecheck:
 	mypy src tests
 
 test:
-	pytest -v
+	pytest
+
+check: lint typecheck test
 
 run:
-	python -m scoring_service.main --pretty
+	$(PYTHON) -m scoring_service.main --pretty
+
+api:
+	uvicorn scoring_service.api.app:create_app --factory --host 0.0.0.0 --port 8000 --reload
+
+docker-build:
+	docker build -t scoring-service:latest .
+
+docker-up:
+	docker compose up --build
+
+docker-down:
+	docker compose down
 
 clean:
-	find . -name "__pycache__" -exec rm -rf {} +
-	find . -name "*.pyc" -delete
-	rm -rf .mypy_cache .ruff_cache .pytest_cache *.egg-info build dist
+	find . -type d -name "__pycache__" -prune -exec rm -rf {} +
+	find . -type d -name ".pytest_cache" -prune -exec rm -rf {} +
+	find . -type d -name ".mypy_cache" -prune -exec rm -rf {} +
+	rm -f .coverage coverage.xml

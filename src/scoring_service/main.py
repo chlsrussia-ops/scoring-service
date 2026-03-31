@@ -7,7 +7,7 @@ from typing import Any
 from scoring_service.config import Settings
 from scoring_service.contracts import ScoreRequest
 from scoring_service.diagnostics import configure_logging
-from scoring_service.executor import execute
+from scoring_service.executor import execute_response
 from scoring_service.serializer import deserialize, serialize
 
 
@@ -28,7 +28,7 @@ def _load_payload_from_file(path: str) -> dict[str, Any]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Scoring pipeline CLI")
-    parser.add_argument("--json", help='Inline JSON object, example: --json \'{"a": 1}\'')
+    parser.add_argument("--json", help="Inline JSON object")
     parser.add_argument("--file", help="Path to JSON file")
     parser.add_argument("--request-id", default="cli-request")
     parser.add_argument("--source", default="cli")
@@ -48,8 +48,8 @@ def build_default_payload() -> dict[str, Any]:
 
 
 def run(argv: list[str] | None = None) -> int:
-    settings = Settings.from_env()
-    configure_logging(settings.log_level)
+    settings = Settings()
+    configure_logging(settings.log_level, json_logs=settings.log_json)
 
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -70,20 +70,10 @@ def run(argv: list[str] | None = None) -> int:
         source=args.source,
     )
 
-    result, decision = execute(request, settings)
-
-    response = {
-        "result": result,
-        "review": {
-            "approved": decision.approved,
-            "label": decision.label,
-            "reason": decision.reason,
-        },
-    }
-
-    indent = settings.pretty_json_indent if args.pretty else settings.pretty_json_indent
-    print(serialize(response, indent=indent))
-    return 0 if result.ok else 1
+    response = execute_response(request, settings)
+    indent = settings.pretty_json_indent if args.pretty else None
+    print(serialize(response, indent=indent or 2))
+    return 0 if response.result.ok else 1
 
 
 if __name__ == "__main__":

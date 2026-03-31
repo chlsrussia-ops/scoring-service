@@ -1,13 +1,1 @@
-__all__ = [
-    "contracts",
-    "serializer",
-    "scoring_engine",
-    "caps",
-    "fallback",
-    "diagnostics",
-    "reviewer",
-    "analytics",
-    "observability",
-    "executor",
-    "config",
-]
+__version__ = "2.0.0"

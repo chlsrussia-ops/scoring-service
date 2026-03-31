@@ -1,0 +1,14 @@
+services:
+  scoring-service:
+    build: .
+    container_name: scoring-service
+    ports:
+      - "8020:8000"
+    env_file:
+      - .env
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health').read()"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
