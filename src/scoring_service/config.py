@@ -39,3 +39,15 @@ class Settings(BaseSettings):
 
     api_host: str = "0.0.0.0"
     api_port: int = Field(default=8000, ge=1, le=65535)
+
+    api_keys: str = "dev-key-1"
+    rate_limit_requests: int = 60
+    rate_limit_window_seconds: int = 60
+    otel_enabled: bool = False
+    otel_service_name: str = "scoring-service"
+    otel_exporter_otlp_endpoint: str = "http://localhost:4317"
+    db_echo: bool = False
+
+    @property
+    def api_key_list(self) -> list[str]:
+        return [k.strip() for k in self.api_keys.split(",") if k.strip()]

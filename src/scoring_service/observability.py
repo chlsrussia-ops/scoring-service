@@ -1,13 +1,13 @@
+"""Observability — Prometheus metrics + event emitters."""
 from __future__ import annotations
+from prometheus_client import Counter, Histogram
 
-from typing import Any
+REQUEST_COUNTER = Counter("scoring_http_requests_total", "Total scoring operations", ["operation", "status"])
+SCORE_COUNTER = Counter("scoring_completed_total", "Completed scoring", ["review_label"])
+SCORE_HISTOGRAM = Histogram("scoring_final_score", "Score distribution", buckets=(0, 10, 20, 40, 60, 80, 100))
 
-from scoring_service.diagnostics import get_logger
+def emit_metric(name: str, value: float, **tags) -> None:
+    pass  # placeholder for custom metrics
 
-
-def emit_metric(name: str, value: float, **tags: Any) -> None:
-    get_logger().debug("metric %s=%s %s", name, value, tags)
-
-
-def emit_event(name: str, **payload: Any) -> None:
-    get_logger().debug("event %s %s", name, payload)
+def emit_event(name: str, **payload) -> None:
+    pass  # placeholder for custom events
