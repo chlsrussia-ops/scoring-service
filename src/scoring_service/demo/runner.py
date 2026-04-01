@@ -144,10 +144,16 @@ class DemoRunner:
             ).first()
             if existing:
                 continue
+            # Try to find linked trend
+            linked_trend_id = None
+            for t_topic, t_id in trend_map.items():
+                if t_topic.lower() in rd['title'].lower() or t_topic.lower() in rd.get('body','').lower():
+                    linked_trend_id = t_id
+                    break
             r = Recommendation(
                 tenant_id=self.tenant_id,
                 workspace_id=self.workspace_id,
-                trend_id=None,
+                trend_id=linked_trend_id,
                 category=rd["category"],
                 title=rd["title"],
                 body=rd["body"],
@@ -168,9 +174,16 @@ class DemoRunner:
             ).first()
             if existing:
                 continue
+            # Try to find linked trend
+            alert_trend_id = None
+            for t_topic, t_id in trend_map.items():
+                if t_topic.lower() in ad['title'].lower():
+                    alert_trend_id = t_id
+                    break
             a = Alert(
                 tenant_id=self.tenant_id,
                 workspace_id=self.workspace_id,
+                trend_id=alert_trend_id,
                 alert_type=ad["alert_type"],
                 severity=ad["severity"],
                 title=ad["title"],

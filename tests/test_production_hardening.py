@@ -1,4 +1,4 @@
-"""Comprehensive tests for production hardening features."""
+"""Comprehensive tests v2 for production hardening improvements."""
 from __future__ import annotations
 
 import time
@@ -38,7 +38,6 @@ from scoring_service.source_protection import SourceProtectionService
 
 @pytest.fixture()
 def db() -> Session:
-    """In-memory SQLite session for testing."""
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
@@ -101,7 +100,6 @@ class TestIdempotency:
         svc.complete(rec, 200, {"score": 42})
         db.commit()
 
-        # Second call should return the completed record
         found = svc.check("dup-1", "score", {"v": 1})
         assert found is not None
         assert found.response_body == {"score": 42}
@@ -109,7 +107,6 @@ class TestIdempotency:
     def test_expired_key_not_found(self, db: Session, settings: Settings) -> None:
         svc = IdempotencyService(db, settings)
         rec = svc.start("exp-1", "score", {"v": 1})
-        # Manually expire
         rec.expires_at = datetime.now(timezone.utc) - timedelta(hours=1)
         db.commit()
 
@@ -129,6 +126,15 @@ class TestIdempotency:
 
         count = svc.cleanup_expired()
         assert count == 1
+
+    def test_fail_marks_record(self, db: Session, settings: Settings) -> None:
+        svc = IdempotencyService(db, settings)
+        rec = svc.start("fail-1", "score", {})
+        svc.fail(rec, "something broke")
+        db.commit()
+
+        found = svc.check("fail-1", "score", {})
+        assert found.status == "failed"
 
 
 # ── Job Queue Tests ──────────────────────────────────────────────────
@@ -173,16 +179,13 @@ class TestJobQueue:
         svc.enqueue("noop", max_attempts=2)
         db.commit()
 
-        # First attempt
         job = svc.acquire_next()
         svc.fail(job, "err 1")
         db.commit()
 
-        # Update next_attempt_at to now for immediate retry
         job.next_attempt_at = datetime.now(timezone.utc)
         db.commit()
 
-        # Second attempt
         job = svc.acquire_next()
         assert job is not None
         svc.fail(job, "err 2")
@@ -196,7 +199,6 @@ class TestJobQueue:
 
         job = svc.acquire_next()
         assert job is not None
-        # Simulate stale: set leased_until far in the past
         job.leased_until = datetime.now(timezone.utc) - timedelta(hours=1)
         db.commit()
 
@@ -263,6 +265,29 @@ class TestJobQueue:
         b3 = svc._compute_backoff(3)
         assert b1 < b2 < b3
 
+    def test_priority_ordering(self, db: Session, settings: Settings) -> None:
+        svc = JobService(db, settings)
+        low = svc.enqueue("noop", priority=0)
+        high = svc.enqueue("noop", priority=10)
+        db.commit()
+
+        # High priority should be acquired first
+        job = svc.acquire_next()
+        assert job.id == high.id
+
+    def test_retry_nonexistent_returns_none(self, db: Session, settings: Settings) -> None:
+        svc = JobService(db, settings)
+        assert svc.retry_job(99999) is None
+
+    def test_list_jobs_with_filters(self, db: Session, settings: Settings) -> None:
+        svc = JobService(db, settings)
+        svc.enqueue("type_a")
+        svc.enqueue("type_b")
+        db.commit()
+
+        a_jobs = svc.list_jobs(job_type="type_a")
+        assert len(a_jobs) == 1
+
 
 # ── Outbox Tests ─────────────────────────────────────────────────────
 
@@ -273,10 +298,25 @@ class TestOutbox:
         event = svc.publish("score.completed", "score", "req-1", {"score": 42})
         db.commit()
         assert event.status == "pending"
+        assert event.dedup_key is not None
 
         pending = svc.fetch_pending()
         assert len(pending) == 1
         assert pending[0].id == event.id
+
+    def test_dedup_prevents_duplicate(self, db: Session, settings: Settings) -> None:
+        svc = OutboxService(db, settings)
+        e1 = svc.publish("score.completed", "score", "req-1", {"score": 42})
+        e2 = svc.publish("score.completed", "score", "req-1", {"score": 42})
+        db.commit()
+        assert e1.id == e2.id  # Same event returned
+
+    def test_different_aggregates_not_deduped(self, db: Session, settings: Settings) -> None:
+        svc = OutboxService(db, settings)
+        e1 = svc.publish("score.completed", "score", "req-1", {})
+        e2 = svc.publish("score.completed", "score", "req-2", {})
+        db.commit()
+        assert e1.id != e2.id
 
     def test_mark_dispatched(self, db: Session, settings: Settings) -> None:
         svc = OutboxService(db, settings)
@@ -326,6 +366,13 @@ class TestOutbox:
         db.commit()
         assert svc.count_pending() == 2
 
+    def test_count_failed(self, db: Session, settings: Settings) -> None:
+        svc = OutboxService(db, settings)
+        e = svc.publish("f", "f", "1", {})
+        e.status = "failed"
+        db.commit()
+        assert svc.count_failed() == 1
+
 
 # ── Failure / DLQ Tests ──────────────────────────────────────────────
 
@@ -366,6 +413,18 @@ class TestFailures:
 
         items = svc.list_dead_letter()
         assert len(items) == 2
+
+    def test_replay_nonexistent_returns_none(self, db: Session, settings: Settings) -> None:
+        svc = FailureService(db, settings)
+        assert svc.replay_dead_letter(99999) is None
+
+    def test_count_by_status(self, db: Session, settings: Settings) -> None:
+        svc = FailureService(db, settings)
+        svc.to_dead_letter("a", "1", "op", {}, "e")
+        svc.to_dead_letter("b", "2", "op", {}, "e")
+        db.commit()
+        counts = svc.count_by_status()
+        assert counts.get("failed", 0) == 2
 
 
 # ── Circuit Breaker Tests ────────────────────────────────────────────
@@ -431,6 +490,27 @@ class TestCircuitBreaker:
         assert cb1 is cb2
         assert len(reg.all_snapshots()) == 1
 
+    def test_snapshot_content(self) -> None:
+        cb = CircuitBreaker("snap", failure_threshold=5, recovery_timeout=30.0)
+        snap = cb.snapshot()
+        assert snap["name"] == "snap"
+        assert snap["state"] == "closed"
+        assert snap["failure_threshold"] == 5
+
+    def test_reopens_on_half_open_failure(self) -> None:
+        cb = CircuitBreaker("test", failure_threshold=1, recovery_timeout=0.01, half_open_max_calls=2)
+        try:
+            cb.call(self._failing_fn)
+        except ValueError:
+            pass
+        time.sleep(0.02)
+        assert cb.state == CircuitState.HALF_OPEN
+        try:
+            cb.call(self._failing_fn)
+        except ValueError:
+            pass
+        assert cb.state == CircuitState.OPEN
+
     @staticmethod
     def _failing_fn():
         raise ValueError("fail")
@@ -470,7 +550,6 @@ class TestSourceProtection:
         svc = SourceProtectionService(db, settings)
         state = svc.quarantine("exp-src", "testing", duration_seconds=1)
         db.commit()
-        # Manually expire
         state.quarantined_until = datetime.now(timezone.utc) - timedelta(seconds=1)
         db.commit()
         assert not svc.is_quarantined("exp-src")
@@ -486,6 +565,22 @@ class TestSourceProtection:
     def test_not_quarantined_by_default(self, db: Session, settings: Settings) -> None:
         svc = SourceProtectionService(db, settings)
         assert not svc.is_quarantined("nonexistent")
+
+    def test_success_resets_consecutive_failures(self, db: Session, settings: Settings) -> None:
+        svc = SourceProtectionService(db, settings)
+        svc.record_failure("src-x", "e1")
+        svc.record_failure("src-x", "e2")
+        db.commit()
+        h = svc.get_health("src-x")
+        assert h.consecutive_failures == 2
+        svc.record_success("src-x")
+        db.commit()
+        h = svc.get_health("src-x")
+        assert h.consecutive_failures == 0
+
+    def test_resume_nonexistent_returns_none(self, db: Session, settings: Settings) -> None:
+        svc = SourceProtectionService(db, settings)
+        assert svc.resume("ghost") is None
 
 
 # ── Audit Tests ──────────────────────────────────────────────────────
@@ -507,6 +602,15 @@ class TestAudit:
         entries = svc.list_recent()
         assert len(entries) == 2
 
+    def test_list_filtered_by_action(self, db: Session) -> None:
+        svc = AuditService(db)
+        svc.log("admin", "retry", "job", "1")
+        svc.log("admin", "quarantine", "source", "2")
+        db.commit()
+        entries = svc.list_recent(action="retry")
+        assert len(entries) == 1
+        assert entries[0].action == "retry"
+
 
 # ── Security Tests ───────────────────────────────────────────────────
 
@@ -524,6 +628,12 @@ class TestSecurity:
         redacted = redact_dict(data)
         assert redacted["config"]["api_key"] == "***REDACTED***"
         assert redacted["config"]["host"] == "localhost"
+
+    def test_redact_preserves_non_dict(self) -> None:
+        data = {"list_field": [1, 2, 3], "password": "secret"}
+        redacted = redact_dict(data)
+        assert redacted["list_field"] == [1, 2, 3]
+        assert redacted["password"] == "***REDACTED***"
 
 
 # ── Correlation ID Tests ─────────────────────────────────────────────
@@ -554,6 +664,15 @@ class TestConfig:
         errors = s.validate_config()
         assert len(errors) == 0
 
+    def test_validate_bad_backoff(self) -> None:
+        s = Settings(job_backoff_base_seconds=0.0)
+        errors = s.validate_config()
+        assert any("BACKOFF" in e for e in errors)
+
+    def test_api_key_list_parsing(self) -> None:
+        s = Settings(api_keys=" key1 , key2 , key3 ")
+        assert s.api_key_list == ["key1", "key2", "key3"]
+
 
 # ── API Integration Tests ────────────────────────────────────────────
 
@@ -562,7 +681,6 @@ class TestAPIIntegration:
     def test_health(self) -> None:
         from fastapi.testclient import TestClient
         from scoring_service.api.app import create_app
-
         client = TestClient(create_app())
         resp = client.get("/health")
         assert resp.status_code == 200
@@ -571,15 +689,10 @@ class TestAPIIntegration:
     def test_score_backward_compatible(self) -> None:
         from fastapi.testclient import TestClient
         from scoring_service.api.app import create_app
-
         client = TestClient(create_app())
         resp = client.post(
             "/v1/score",
-            json={
-                "payload": {"amount": 100, "comment": "test"},
-                "request_id": "compat-1",
-                "source": "test",
-            },
+            json={"payload": {"amount": 100, "comment": "test"}, "request_id": "compat-1", "source": "test"},
             headers={"X-Api-Key": "dev-key-1"},
         )
         assert resp.status_code == 200
@@ -590,18 +703,13 @@ class TestAPIIntegration:
     def test_score_requires_auth(self) -> None:
         from fastapi.testclient import TestClient
         from scoring_service.api.app import create_app
-
         client = TestClient(create_app())
-        resp = client.post(
-            "/v1/score",
-            json={"payload": {"a": 1}, "request_id": "no-auth", "source": "t"},
-        )
+        resp = client.post("/v1/score", json={"payload": {"a": 1}, "request_id": "no-auth", "source": "t"})
         assert resp.status_code == 401
 
     def test_admin_requires_admin_key(self) -> None:
         from fastapi.testclient import TestClient
         from scoring_service.api.app import create_app
-
         client = TestClient(create_app())
         resp = client.get("/v1/admin/jobs")
         assert resp.status_code == 403
@@ -609,31 +717,64 @@ class TestAPIIntegration:
     def test_admin_jobs_with_key(self) -> None:
         from fastapi.testclient import TestClient
         from scoring_service.api.app import create_app
-
         client = TestClient(create_app())
-        resp = client.get(
+        resp = client.get("/v1/admin/jobs", headers={"X-Admin-Key": "admin-secret-key"})
+        assert resp.status_code == 200
+
+    def test_admin_enqueue_job(self) -> None:
+        from fastapi.testclient import TestClient
+        from scoring_service.api.app import create_app
+        client = TestClient(create_app())
+        resp = client.post(
             "/v1/admin/jobs",
+            json={"job_type": "noop", "payload": {"x": 1}},
             headers={"X-Admin-Key": "admin-secret-key"},
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 201
+        assert resp.json()["status"] == "enqueued"
+
+    def test_admin_job_not_found_404(self) -> None:
+        from fastapi.testclient import TestClient
+        from scoring_service.api.app import create_app
+        client = TestClient(create_app())
+        resp = client.get("/v1/admin/jobs/999999", headers={"X-Admin-Key": "admin-secret-key"})
+        assert resp.status_code == 404
 
     def test_admin_diagnostics(self) -> None:
         from fastapi.testclient import TestClient
         from scoring_service.api.app import create_app
-
         client = TestClient(create_app())
-        resp = client.get(
-            "/v1/admin/diagnostics/summary",
-            headers={"X-Admin-Key": "admin-secret-key"},
-        )
+        resp = client.get("/v1/admin/diagnostics/summary", headers={"X-Admin-Key": "admin-secret-key"})
         assert resp.status_code == 200
         body = resp.json()
         assert "status" in body
+        assert "recent_failures_24h" in body
+
+    def test_admin_audit_log(self) -> None:
+        from fastapi.testclient import TestClient
+        from scoring_service.api.app import create_app
+        client = TestClient(create_app())
+        resp = client.get("/v1/admin/audit", headers={"X-Admin-Key": "admin-secret-key"})
+        assert resp.status_code == 200
+        assert "entries" in resp.json()
+
+    def test_admin_circuit_breakers(self) -> None:
+        from fastapi.testclient import TestClient
+        from scoring_service.api.app import create_app
+        client = TestClient(create_app())
+        resp = client.get("/v1/admin/circuit-breakers", headers={"X-Admin-Key": "admin-secret-key"})
+        assert resp.status_code == 200
+
+    def test_admin_idempotency_cleanup(self) -> None:
+        from fastapi.testclient import TestClient
+        from scoring_service.api.app import create_app
+        client = TestClient(create_app())
+        resp = client.post("/v1/admin/idempotency/cleanup", headers={"X-Admin-Key": "admin-secret-key"})
+        assert resp.status_code == 200
 
     def test_ready_endpoint_checks(self) -> None:
         from fastapi.testclient import TestClient
         from scoring_service.api.app import create_app
-
         client = TestClient(create_app())
         resp = client.get("/ready")
         assert resp.status_code == 200
@@ -643,27 +784,52 @@ class TestAPIIntegration:
     def test_idempotent_score(self) -> None:
         from fastapi.testclient import TestClient
         from scoring_service.api.app import create_app
-
         client = TestClient(create_app())
         headers = {"X-Api-Key": "dev-key-1", "Idempotency-Key": "idem-test-1"}
-        payload = {
-            "payload": {"amount": 50},
-            "request_id": "idem-r1",
-            "source": "test",
-        }
+        payload = {"payload": {"amount": 50}, "request_id": "idem-r1", "source": "test"}
 
         resp1 = client.post("/v1/score", json=payload, headers=headers)
         assert resp1.status_code == 200
 
-        # Second call with same key
         resp2 = client.post("/v1/score", json=payload, headers=headers)
         assert resp2.status_code == 200
 
     def test_metrics_endpoint(self) -> None:
         from fastapi.testclient import TestClient
         from scoring_service.api.app import create_app
-
         client = TestClient(create_app())
         resp = client.get("/metrics")
         assert resp.status_code == 200
         assert b"scoring" in resp.content
+
+    def test_quarantine_blocks_scoring(self) -> None:
+        """Quarantine a source, verify scoring is blocked, then resume."""
+        from fastapi.testclient import TestClient
+        from scoring_service.api.app import create_app
+        client = TestClient(create_app())
+        admin_h = {"X-Admin-Key": "admin-secret-key"}
+        api_h = {"X-Api-Key": "dev-key-1"}
+
+        # Quarantine
+        resp = client.post("/v1/admin/sources/blocked-src/quarantine?reason=test", headers=admin_h)
+        assert resp.status_code == 200
+
+        # Try scoring from quarantined source
+        resp = client.post(
+            "/v1/score",
+            json={"payload": {"a": 1}, "request_id": "q-1", "source": "blocked-src"},
+            headers=api_h,
+        )
+        assert resp.status_code == 429
+
+        # Resume
+        resp = client.post("/v1/admin/sources/blocked-src/resume", headers=admin_h)
+        assert resp.status_code == 200
+
+        # Now scoring should work
+        resp = client.post(
+            "/v1/score",
+            json={"payload": {"a": 1}, "request_id": "q-2", "source": "blocked-src"},
+            headers=api_h,
+        )
+        assert resp.status_code == 200
