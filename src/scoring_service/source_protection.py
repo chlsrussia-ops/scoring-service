@@ -12,6 +12,17 @@ from scoring_service.db.models import QuarantineRule, SourceHealthState
 logger = logging.getLogger("scoring_service")
 
 
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _ensure_aware(dt: datetime) -> datetime:
+    """Make a datetime timezone-aware (UTC) if it's naive."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 class SourceProtectionService:
     def __init__(self, db: Session, settings: Settings) -> None:
         self.db = db
@@ -24,7 +35,7 @@ class SourceProtectionService:
             .first()
         )
         if not state:
-            now = datetime.now(timezone.utc)
+            now = _utcnow()
             state = SourceHealthState(
                 source_name=source_name,
                 created_at=now,
@@ -36,7 +47,7 @@ class SourceProtectionService:
 
     def record_success(self, source_name: str) -> None:
         state = self._get_or_create(source_name)
-        now = datetime.now(timezone.utc)
+        now = _utcnow()
         state.total_requests += 1
         state.consecutive_failures = 0
         state.last_success_at = now
@@ -45,7 +56,7 @@ class SourceProtectionService:
 
     def record_failure(self, source_name: str, error: str) -> None:
         state = self._get_or_create(source_name)
-        now = datetime.now(timezone.utc)
+        now = _utcnow()
         state.total_requests += 1
         state.total_errors += 1
         state.consecutive_failures += 1
@@ -53,7 +64,6 @@ class SourceProtectionService:
         state.last_error_at = now
         state.updated_at = now
 
-        # Auto-quarantine if threshold exceeded
         threshold = self.settings.source_quarantine_error_threshold
         if state.consecutive_failures >= threshold and not self.is_quarantined(source_name):
             duration = self.settings.source_quarantine_duration_seconds
@@ -75,9 +85,9 @@ class SourceProtectionService:
         )
         if not state or not state.quarantined_until:
             return False
-        now = datetime.now(timezone.utc)
-        if state.quarantined_until <= now:
-            # Quarantine expired
+        now = _utcnow()
+        quarantined_until = _ensure_aware(state.quarantined_until)
+        if quarantined_until <= now:
             state.quarantined_until = None
             state.quarantine_reason = None
             self.db.flush()
@@ -92,7 +102,7 @@ class SourceProtectionService:
         created_by: str = "admin",
     ) -> SourceHealthState:
         state = self._get_or_create(source_name)
-        now = datetime.now(timezone.utc)
+        now = _utcnow()
         dur = duration_seconds or self.settings.source_quarantine_duration_seconds
         state.quarantined_until = now + timedelta(seconds=dur)
         state.quarantine_reason = reason
@@ -119,13 +129,12 @@ class SourceProtectionService:
         )
         if not state:
             return None
-        now = datetime.now(timezone.utc)
+        now = _utcnow()
         state.quarantined_until = None
         state.quarantine_reason = None
         state.consecutive_failures = 0
         state.updated_at = now
 
-        # Deactivate rules
         self.db.query(QuarantineRule).filter(
             QuarantineRule.source_name == source_name,
             QuarantineRule.active.is_(True),
@@ -149,17 +158,22 @@ class SourceProtectionService:
         )
 
     def list_quarantined(self) -> list[SourceHealthState]:
-        now = datetime.now(timezone.utc)
-        return (
-            self.db.query(SourceHealthState)
-            .filter(SourceHealthState.quarantined_until > now)
-            .all()
-        )
+        now = _utcnow()
+        all_sources = self.db.query(SourceHealthState).filter(
+            SourceHealthState.quarantined_until.isnot(None)
+        ).all()
+        return [
+            s for s in all_sources
+            if s.quarantined_until and _ensure_aware(s.quarantined_until) > now
+        ]
 
     def summary(self) -> dict:
         all_sources = self.list_all()
-        now = datetime.now(timezone.utc)
-        quarantined = [s for s in all_sources if s.quarantined_until and s.quarantined_until > now]
+        now = _utcnow()
+        quarantined = [
+            s for s in all_sources
+            if s.quarantined_until and _ensure_aware(s.quarantined_until) > now
+        ]
         unhealthy = [
             s for s in all_sources
             if s.consecutive_failures >= 3 and s not in quarantined
@@ -175,7 +189,11 @@ class SourceProtectionService:
                     "total_requests": s.total_requests,
                     "total_errors": s.total_errors,
                     "consecutive_failures": s.consecutive_failures,
-                    "quarantined_until": s.quarantined_until.isoformat() if s.quarantined_until and s.quarantined_until > now else None,
+                    "quarantined_until": (
+                        _ensure_aware(s.quarantined_until).isoformat()
+                        if s.quarantined_until and _ensure_aware(s.quarantined_until) > now
+                        else None
+                    ),
                     "error_rate": round(s.total_errors / max(s.total_requests, 1), 4),
                 }
                 for s in all_sources

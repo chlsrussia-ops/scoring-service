@@ -1,12 +1,11 @@
-"""FastAPI app factory with full production hardening."""
+"""FastAPI app factory — scoring-service with dashboard, sources, LLM, demo + production hardening."""
 from __future__ import annotations
 
 import logging
-import sys
-from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, Request
-from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from fastapi import FastAPI, Depends, Request
+from fastapi.middleware.cors import CORSMiddleware
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from starlette.responses import Response
 
 from scoring_service.admin.routes import admin_router
@@ -17,7 +16,6 @@ from scoring_service.correlation import CorrelationMiddleware, get_correlation_i
 from scoring_service.diagnostics import configure_logging
 from scoring_service.idempotency.service import IdempotencyService
 from scoring_service.observability import (
-    OUTBOX_PENDING,
     REQUEST_COUNTER,
     SCORE_COUNTER,
     SCORE_HISTOGRAM,
@@ -37,20 +35,34 @@ logger = logging.getLogger("scoring_service")
 def create_app() -> FastAPI:
     settings = Settings()
 
-    # ── Fail-fast config validation ──
+    # ── Fail-fast config validation (prod only) ──
     config_errors = settings.validate_config()
     if config_errors and settings.env == "prod":
+        import sys
         for err in config_errors:
             print(f"CONFIG ERROR: {err}", file=sys.stderr)
         sys.exit(1)
 
     configure_logging(settings.log_level, json_logs=settings.log_json)
 
-    app = FastAPI(title=settings.app_name, version="3.1.0")
+    app = FastAPI(
+        title="TrendIntel - Content Intelligence Platform",
+        description="AI-powered trend intelligence for content, media, and marketing teams",
+        version="4.1.0",
+    )
     app.state.settings = settings
 
-    # ── Correlation middleware ──
+    # ── Correlation ID middleware ──
     app.add_middleware(CorrelationMiddleware)
+
+    # ── CORS ──
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_origin_list,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     # ── Circuit breaker registry ──
     app.state.circuit_registry = CircuitBreakerRegistry(
@@ -62,7 +74,6 @@ def create_app() -> FastAPI:
     # ── DB setup ──
     try:
         from scoring_service.db.session import create_session_factory
-
         engine, session_factory = create_session_factory(settings)
         app.state.engine = engine
         app.state.session_factory = session_factory
@@ -71,14 +82,14 @@ def create_app() -> FastAPI:
         app.state.engine = None
         app.state.session_factory = None
 
-    # ── Include admin router ──
+    # ── Admin router ──
     app.include_router(admin_router)
 
     # ── Health / Ready / Metrics ──
 
     @app.get("/health")
     async def health():
-        return {"status": "ok", "version": "3.1.0"}
+        return {"status": "ok", "version": "4.1.0", "product": "TrendIntel"}
 
     @app.get("/ready")
     async def ready():
@@ -86,17 +97,14 @@ def create_app() -> FastAPI:
         if app.state.session_factory:
             try:
                 db = app.state.session_factory()
-                # Outbox backlog
                 osvc = OutboxService(db, settings)
                 pending = osvc.count_pending()
                 checks["outbox_pending"] = pending
                 if pending > 100:
                     checks["outbox"] = "backlog"
 
-                # Stale locks
                 from scoring_service.db.models import JobRecord
                 from datetime import datetime, timezone
-
                 now = datetime.now(timezone.utc)
                 stale = (
                     db.query(JobRecord)
@@ -104,12 +112,9 @@ def create_app() -> FastAPI:
                     .count()
                 )
                 checks["stale_locks"] = stale
-
-                # Quarantined
                 sps = SourceProtectionService(db, settings)
                 quarantined = len(sps.list_quarantined())
                 checks["quarantined_sources"] = quarantined
-
                 db.close()
             except Exception:
                 checks["db"] = "error"
@@ -125,7 +130,7 @@ def create_app() -> FastAPI:
     async def metrics():
         return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
-    # ── Score endpoint (backward compatible) ──
+    # ── Score endpoint (backward compatible + production hardened) ──
 
     @app.post(
         "/v1/score",
@@ -134,7 +139,6 @@ def create_app() -> FastAPI:
     async def score(body: ScoreRequest, request: Request):
         REQUEST_COUNTER.labels(operation="score", status="started").inc()
         SOURCE_REQUESTS.labels(source=body.source).inc()
-
         cid = get_correlation_id()
 
         # ── Source quarantine check ──
@@ -163,11 +167,8 @@ def create_app() -> FastAPI:
                 existing = idem_svc.check(idempotency_key, "score", body.payload)
                 if existing and existing.status == "completed":
                     db.close()
-                    logger.info(
-                        "idempotent_hit key=%s cid=%s", idempotency_key, cid
-                    )
+                    logger.info("idempotent_hit key=%s cid=%s", idempotency_key, cid)
                     return existing.response_body
-                # Start new idempotency record
                 idem_record = idem_svc.start(idempotency_key, "score", body.payload)
                 db.commit()
             except Exception:
@@ -178,32 +179,24 @@ def create_app() -> FastAPI:
         # ── Execute scoring ──
         service = ScoringService(settings)
         result, review = service.execute(body)
-
         SCORE_COUNTER.labels(review_label=review.label).inc()
         SCORE_HISTOGRAM.observe(result.final_score)
 
         response_data = {"result": result.model_dump(), "review": review.model_dump()}
 
-        # ── Persist result + outbox in same transaction ──
+        # ── Persist + outbox in same transaction ──
         if app.state.session_factory:
             db = app.state.session_factory()
             try:
-                # Save score record
                 repo = ScoreRepository(db)
                 repo.save(
-                    request_id=result.request_id,
-                    source=result.source,
-                    payload=body.payload,
-                    final_score=result.final_score,
-                    capped=result.capped,
-                    used_fallback=result.used_fallback,
-                    reason=result.reason,
-                    review_label=review.label,
-                    approved=review.approved,
-                    diagnostics=list(result.diagnostics),
+                    request_id=result.request_id, source=result.source,
+                    payload=body.payload, final_score=result.final_score,
+                    capped=result.capped, used_fallback=result.used_fallback,
+                    reason=result.reason, review_label=review.label,
+                    approved=review.approved, diagnostics=list(result.diagnostics),
                 )
 
-                # Write outbox event in same transaction
                 if settings.enable_outbox:
                     outbox = OutboxService(db, settings)
                     outbox.publish(
@@ -220,14 +213,12 @@ def create_app() -> FastAPI:
                         correlation_id=cid,
                     )
 
-                # Update idempotency record
                 if idem_record and idempotency_key:
                     idem_svc2 = IdempotencyService(db, settings)
                     rec = idem_svc2.check(idempotency_key, "score", body.payload)
                     if rec:
                         idem_svc2.complete(rec, 200, response_data)
 
-                # Update source health
                 if settings.enable_source_protection:
                     sps = SourceProtectionService(db, settings)
                     if result.ok:
@@ -239,18 +230,13 @@ def create_app() -> FastAPI:
             except Exception as exc:
                 db.rollback()
                 logger.warning("db_persist_error error=%s cid=%s", str(exc)[:200], cid)
-                # Record failure but don't break the response
                 try:
                     db2 = app.state.session_factory()
                     from scoring_service.failures.service import FailureService
-
                     fsvc = FailureService(db2, settings)
                     fsvc.record_failure(
-                        entity_type="score",
-                        entity_id=result.request_id,
-                        operation="persist",
-                        error=str(exc)[:500],
-                        correlation_id=cid,
+                        entity_type="score", entity_id=result.request_id,
+                        operation="persist", error=str(exc)[:500], correlation_id=cid,
                     )
                     db2.commit()
                     db2.close()
@@ -262,8 +248,6 @@ def create_app() -> FastAPI:
         REQUEST_COUNTER.labels(operation="score", status="completed").inc()
         return response_data
 
-    # ── List scores (backward compatible) ──
-
     @app.get("/v1/scores")
     async def list_scores():
         if not app.state.session_factory:
@@ -272,26 +256,22 @@ def create_app() -> FastAPI:
         repo = ScoreRepository(db)
         records = repo.list_recent(50)
         db.close()
-        return {
-            "records": [
-                {
-                    "id": r.id,
-                    "request_id": r.request_id,
-                    "score": r.final_score,
-                    "label": r.review_label,
-                    "approved": r.approved,
-                }
-                for r in records
-            ]
-        }
+        return {"records": [{"id": r.id, "request_id": r.request_id, "score": r.final_score,
+                              "label": r.review_label, "approved": r.approved} for r in records]}
 
+    # ── Register existing routers ──
+    if app.state.session_factory:
+        try:
+            from scoring_service.api.dashboard import router as dashboard_router
+            from scoring_service.api.sources_api import router as sources_router
+            from scoring_service.api.llm_api import router as llm_router
+            from scoring_service.api.demo_api import router as demo_router
 
-    # ── Stage 3: Platform API routes ──────────────────────
-    from scoring_service.plugins.registry import plugin_registry
-    from scoring_service.plugins.builtin import register_builtins
-    register_builtins(plugin_registry)
+            app.include_router(dashboard_router)
+            app.include_router(sources_router)
+            app.include_router(llm_router)
+            app.include_router(demo_router)
+        except ImportError:
+            pass
 
-    from scoring_service.platform_api.routes import platform_router as plat_router, admin_router as plat_admin_router
-    app.include_router(plat_router)
-    app.include_router(plat_admin_router)
     return app
