@@ -231,7 +231,7 @@ class TopNRecommender(BaseRecommender):
                     "category": t.get("category", ""),
                     "title": f"Trending: {t.get('topic', 'unknown')}",
                     "body": f"Topic '{t.get('topic')}' scored {score:.1f} with {t.get('event_count', 0)} events",
-                    "priority": "high" if score >= 50 else "medium",
+                    "priority": "high" if score >= ctx.get("high_priority_threshold", 50.0) else "medium",
                     "confidence": min(score / 100.0, 1.0),
                 })
         return recs

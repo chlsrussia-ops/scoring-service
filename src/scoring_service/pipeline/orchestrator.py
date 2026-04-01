@@ -53,7 +53,10 @@ class PipelineOrchestrator:
         policy_eval_result: dict[str, Any] | None = None,
     ) -> ProcessingRun:
         """Execute full pipeline for a tenant."""
+        import uuid as _uuid
         now = datetime.now(timezone.utc)
+        correlation_id = _uuid.uuid4().hex[:16]
+
         run = ProcessingRun(
             tenant_id=tenant_id,
             workspace_id=workspace_id,
@@ -131,9 +134,15 @@ class PipelineOrchestrator:
             run.status = RunStatus.completed  # type: ignore[assignment]
             run.completed_at = datetime.now(timezone.utc)  # type: ignore[assignment]
             run.stats_json = stats  # type: ignore[assignment]
+            logger.info(
+                "pipeline_completed run_id=%d tenant=%s events=%d trends=%d recs=%d alerts=%d correlation_id=%s",
+                run.id, tenant_id, stats.get("events_ingested", 0),
+                stats.get("trends_saved", 0), stats.get("recommendations_created", 0),
+                stats.get("alerts_created", 0), correlation_id,
+            )
 
         except Exception as e:
-            logger.exception("Pipeline run %d failed: %s", run.id, e)
+            logger.exception("pipeline_failed run_id=%d tenant=%s error=%s correlation_id=%s", run.id, tenant_id, str(e)[:300], correlation_id)
             run.status = RunStatus.failed  # type: ignore[assignment]
             run.error_message = str(e)  # type: ignore[assignment]
             run.completed_at = datetime.now(timezone.utc)  # type: ignore[assignment]
@@ -196,8 +205,9 @@ class PipelineOrchestrator:
         for raw in raw_events:
             try:
                 normalized.append(normalizer.normalize(raw))
-            except Exception:
+            except Exception as _norm_err:
                 stage.items_error = (stage.items_error or 0) + 1  # type: ignore[assignment]
+                logger.warning("normalize_item_failed error=%s", str(_norm_err)[:200])
                 normalized.append(raw)
 
         stage.items_out = len(normalized)  # type: ignore[assignment]
@@ -358,6 +368,28 @@ class PipelineOrchestrator:
             self.db.add(rec)
             self.db.flush()
 
+            # Decision trace for recommendation
+            rec_trace = DecisionTrace(
+                tenant_id=tenant_id,
+                entity_type="recommendation",
+                entity_id=rec.id,
+                input_summary_json={"trend_topic": topic, "score": r.get("score", r.get("confidence", 0))},
+                matched_rules_json=[],
+                factor_contributions_json={
+                    "trend_score": trend.score if trend else 0,
+                    "confidence": r.get("confidence", 0),
+                    "priority": r.get("priority", "medium"),
+                },
+                explanation_text=f"Recommendation for {topic}: priority={r.get(priority, medium)}, confidence={r.get(confidence, 0):.2f}",
+                explanation_json={
+                    "topic": topic, "priority": r.get("priority"),
+                    "confidence": r.get("confidence", 0),
+                    "trend_id": trend.id if trend else None,
+                    "reason": "top_scored_trend",
+                },
+            )
+            self.db.add(rec_trace)
+
             # Lineage: recommendation -> trend
             if trend:
                 link = SignalLineageLink(
@@ -391,9 +423,11 @@ class PipelineOrchestrator:
         notifier = self.registry.get_notifier(notifier_name)
         created = 0
 
+        from scoring_service.config import Settings as _Settings
+        _cfg = _Settings()
         for trend in trends:
-            if trend.score >= 50:
-                severity = "critical" if trend.score >= 80 else "warning"
+            if trend.score >= _cfg.pipeline_alert_score_threshold:
+                severity = "critical" if trend.score >= _cfg.pipeline_alert_critical_threshold else "warning"
                 alert = Alert(
                     tenant_id=tenant_id,
                     workspace_id=workspace_id,
@@ -405,6 +439,29 @@ class PipelineOrchestrator:
                     run_id=run_id,
                 )
                 self.db.add(alert)
+                self.db.flush()
+
+                # Decision trace for alert
+                alert_trace = DecisionTrace(
+                    tenant_id=tenant_id,
+                    entity_type="alert",
+                    entity_id=alert.id,
+                    input_summary_json={"trend_score": trend.score, "trend_topic": trend.topic},
+                    matched_rules_json=[{"rule": "score_threshold", "threshold": _cfg.pipeline_alert_score_threshold}],
+                    factor_contributions_json={
+                        "trend_score": trend.score,
+                        "severity": severity,
+                        "threshold": _cfg.pipeline_alert_score_threshold,
+                    },
+                    explanation_text=f"Alert fired: trend {trend.topic} score={trend.score:.1f} >= threshold={_cfg.pipeline_alert_score_threshold}",
+                    explanation_json={
+                        "trigger": "score_threshold",
+                        "trend_score": trend.score,
+                        "threshold": _cfg.pipeline_alert_score_threshold,
+                        "severity": severity,
+                    },
+                )
+                self.db.add(alert_trace)
                 created += 1
 
                 if notifier:

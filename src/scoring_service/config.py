@@ -210,6 +210,14 @@ class Settings(BaseSettings):
     source_learning_min_samples: int = 10
     source_trust_change_max_per_update: float = 0.1  # max trust change per update cycle
 
+    # ── Pipeline Thresholds (extracted from hardcoded values) ───
+    pipeline_alert_score_threshold: float = 50.0
+    pipeline_alert_critical_threshold: float = 80.0
+    pipeline_recommendation_min_score: float = 10.0
+    pipeline_recommendation_high_priority_threshold: float = 50.0
+    pipeline_detection_min_count: int = 2
+    pipeline_detection_min_value: float = 1.0
+
     @property
     def protected_metric_list(self) -> list[str]:
         return [m.strip() for m in self.adaptation_protected_metrics.split(",") if m.strip()]
