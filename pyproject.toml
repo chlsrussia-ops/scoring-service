@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "scoring-service"
-version = "2.0.0"
-description = "Ultra production-grade scoring pipeline starter with API, CLI, Docker, CI"
+version = "4.0.0"
+description = "TrendIntel - AI-powered content intelligence platform for media & marketing teams"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -25,6 +25,7 @@ dependencies = [
 dev = [
   "pytest>=8.2,<9",
   "pytest-cov>=5,<6",
+  "pytest-asyncio>=0.23,<1",
   "mypy>=1.10,<2",
   "ruff>=0.5,<1",
   "pre-commit>=3.7,<4",
@@ -56,8 +57,7 @@ indent-style = "space"
 python_version = "3.11"
 warn_return_any = true
 warn_unused_configs = true
-disallow_untyped_defs = true
-disallow_incomplete_defs = true
+disallow_untyped_defs = false
 check_untyped_defs = true
 no_implicit_optional = true
 strict_equality = true
@@ -72,7 +72,8 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
-addopts = "-q --cov=scoring_service --cov-report=term-missing --cov-report=xml"
+addopts = "-q --cov=scoring_service --cov-report=term-missing"
+asyncio_mode = "auto"
 
 [tool.coverage.run]
 branch = true

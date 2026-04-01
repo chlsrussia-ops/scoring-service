@@ -13,3 +13,5 @@ build/
 .env
 celerybeat-schedule
 .github/
+frontend/node_modules/
+frontend/dist/

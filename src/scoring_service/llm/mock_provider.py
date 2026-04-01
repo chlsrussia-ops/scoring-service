@@ -1,4 +1,4 @@
-"""Mock LLM provider — generates realistic summaries from input fields."""
+"""Mock LLM provider - generates realistic summaries from input fields."""
 from __future__ import annotations
 
 import hashlib
@@ -7,7 +7,6 @@ import random
 from scoring_service.llm.base import LlmProvider, LlmRequest, LlmResponse
 
 
-# Deterministic seed from input for reproducible outputs
 def _seed_from(text: str) -> int:
     return int(hashlib.md5(text.encode()).hexdigest()[:8], 16)
 
@@ -20,8 +19,6 @@ class MockLlmProvider(LlmProvider):
 
     async def generate(self, request: LlmRequest) -> LlmResponse:
         rng = random.Random(_seed_from(request.prompt[:200]))
-
-        # Parse context from prompt to generate relevant output
         prompt_lower = request.prompt.lower()
 
         if "trend_summary" in prompt_lower or "trend analysis" in prompt_lower:
@@ -43,7 +40,6 @@ class MockLlmProvider(LlmProvider):
         )
 
     def _gen_trend_summary(self, prompt: str, rng: random.Random) -> str:
-        # Extract topic-like keywords from prompt
         lines = prompt.split("\n")
         topic = "this topic"
         for line in lines:
@@ -54,20 +50,23 @@ class MockLlmProvider(LlmProvider):
         momentum = rng.choice(["strong", "accelerating", "steady", "explosive"])
         timeframe = rng.choice(["the past 48 hours", "the last week", "recent days", "the past 72 hours"])
         impact = rng.choice(["high", "significant", "notable", "substantial"])
+        data_points = str(rng.randint(3, 12))
+        sources = str(rng.randint(2, 5))
+        conf = rng.choice(["high", "moderate-to-high", "strong"])
 
         return (
-            f"## Trend Summary: {topic}\n\n"
-            f"**What is happening:** This trend shows {momentum} momentum over {timeframe}, "
-            f"driven by increased discussion volume and engagement across multiple sources. "
-            f"The growth pattern indicates genuine audience interest rather than algorithmic amplification.\n\n"
-            f"**Why it matters:** Content and marketing teams should pay attention because this topic "
-            f"has {impact} potential for audience engagement. Early movers who create content around "
-            f"this theme are likely to capture disproportionate attention.\n\n"
-            f"**Confidence:** The signal is supported by {rng.randint(3, 12)} independent data points "
-            f"across {rng.randint(2, 5)} sources, giving us {rng.choice([high, moderate-to-high, strong])} "
-            f"confidence in the trend direction.\n\n"
-            f"**Recommended action:** Consider fast-follow content creation targeting this theme. "
-            f"Monitor for sustained growth over the next 24-48 hours before committing major resources."
+            "## Trend Summary: " + topic + "\n\n"
+            "**What is happening:** This trend shows " + momentum + " momentum over " + timeframe + ", "
+            "driven by increased discussion volume and engagement across multiple sources. "
+            "The growth pattern indicates genuine audience interest rather than algorithmic amplification.\n\n"
+            "**Why it matters:** Content and marketing teams should pay attention because this topic "
+            "has " + impact + " potential for audience engagement. Early movers who create content around "
+            "this theme are likely to capture disproportionate attention.\n\n"
+            "**Confidence:** The signal is supported by " + data_points + " independent data points "
+            "across " + sources + " sources, giving us " + conf + " "
+            "confidence in the trend direction.\n\n"
+            "**Recommended action:** Consider fast-follow content creation targeting this theme. "
+            "Monitor for sustained growth over the next 24-48 hours before committing major resources."
         )
 
     def _gen_recommendation(self, prompt: str, rng: random.Random) -> str:
@@ -86,45 +85,54 @@ class MockLlmProvider(LlmProvider):
             "Prepare a data-driven infographic summarizing the trend for social sharing.",
         ]
         risks = [
-            "The trend may be short-lived — avoid over-investing before confirmation.",
+            "The trend may be short-lived - avoid over-investing before confirmation.",
             "Competitors may already be covering this angle; differentiation is key.",
-            "Audience sentiment appears mixed — monitor reactions closely after publishing.",
+            "Audience sentiment appears mixed - monitor reactions closely after publishing.",
             "Volume is growing but engagement depth is uneven across platforms.",
         ]
+        hours = rng.choice(["24", "48", "72"])
+        multiplier = str(rng.randint(2, 8))
 
         return (
-            f"## Enhanced Recommendation: {title}\n\n"
-            f"**Action plan:**\n"
-            f"1. {rng.choice(actions)}\n"
-            f"2. Set up monitoring alerts for related keywords and competitor activity.\n"
-            f"3. Prepare 2-3 content variations to test which angle resonates best.\n\n"
-            f"**Why now:** The current growth trajectory suggests a window of opportunity "
-            f"in the next {rng.choice([24, 48, 72])} hours. Acting quickly positions "
-            f"your brand as a thought leader on this emerging topic.\n\n"
-            f"**Risk note:** {rng.choice(risks)}\n\n"
-            f"**Expected impact:** Based on similar trends, well-timed content could generate "
-            f"{rng.randint(2, 8)}x typical engagement rates."
+            "## Enhanced Recommendation: " + title + "\n\n"
+            "**Action plan:**\n"
+            "1. " + rng.choice(actions) + "\n"
+            "2. Set up monitoring alerts for related keywords and competitor activity.\n"
+            "3. Prepare 2-3 content variations to test which angle resonates best.\n\n"
+            "**Why now:** The current growth trajectory suggests a window of opportunity "
+            "in the next " + hours + " hours. Acting quickly positions "
+            "your brand as a thought leader on this emerging topic.\n\n"
+            "**Risk note:** " + rng.choice(risks) + "\n\n"
+            "**Expected impact:** Based on similar trends, well-timed content could generate "
+            + multiplier + "x typical engagement rates."
         )
 
     def _gen_digest(self, prompt: str, rng: random.Random) -> str:
+        new_trends = str(rng.randint(3, 8))
+        strong = str(rng.randint(1, 3))
+        level = rng.choice(["elevated", "high", "moderate"])
+        recs = str(rng.randint(2, 5))
+        pct = str(rng.randint(15, 60))
+        competitor = str(rng.randint(1, 3))
+
         return (
-            f"## Executive Content Intelligence Briefing\n\n"
-            f"**Period:** Last 24 hours\n\n"
-            f"### Key Findings\n"
-            f"- {rng.randint(3, 8)} new trends detected, {rng.randint(1, 3)} showing strong upward momentum\n"
-            f"- Content opportunity score is {rng.choice([elevated, high, moderate])} across monitored categories\n"
-            f"- {rng.randint(2, 5)} actionable recommendations generated for the content team\n\n"
-            f"### Top Trends\n"
-            f"1. **AI-powered content tools** — Growing {rng.randint(15, 60)}% in discussion volume\n"
-            f"2. **Short-form video strategy** — Sustained interest with high engagement signals\n"
-            f"3. **Creator economy shifts** — New platform dynamics creating content opportunities\n\n"
-            f"### Recommendations\n"
-            f"- Prioritize fast-follow content on the top trending topic\n"
-            f"- Escalate emerging themes to the editorial calendar review\n"
-            f"- Monitor volatile discussions for brand safety considerations\n\n"
-            f"### Risks\n"
-            f"- One topic shows potentially negative sentiment — requires monitoring\n"
-            f"- Competitor activity detected on {rng.randint(1, 3)} trending themes\n"
+            "## Executive Content Intelligence Briefing\n\n"
+            "**Period:** Last 24 hours\n\n"
+            "### Key Findings\n"
+            "- " + new_trends + " new trends detected, " + strong + " showing strong upward momentum\n"
+            "- Content opportunity score is " + level + " across monitored categories\n"
+            "- " + recs + " actionable recommendations generated for the content team\n\n"
+            "### Top Trends\n"
+            "1. **AI-powered content tools** - Growing " + pct + "% in discussion volume\n"
+            "2. **Short-form video strategy** - Sustained interest with high engagement signals\n"
+            "3. **Creator economy shifts** - New platform dynamics creating content opportunities\n\n"
+            "### Recommendations\n"
+            "- Prioritize fast-follow content on the top trending topic\n"
+            "- Escalate emerging themes to the editorial calendar review\n"
+            "- Monitor volatile discussions for brand safety considerations\n\n"
+            "### Risks\n"
+            "- One topic shows potentially negative sentiment - requires monitoring\n"
+            "- Competitor activity detected on " + competitor + " trending themes\n"
         )
 
     def _gen_alert_explanation(self, prompt: str, rng: random.Random) -> str:
@@ -135,20 +143,27 @@ class MockLlmProvider(LlmProvider):
                 title = line.split(":", 1)[-1].strip()
                 break
 
+        metric = rng.choice(["growth rate", "engagement velocity", "discussion volume", "source coverage"])
+        pct = str(rng.randint(150, 400))
+
         return (
-            f"**Alert: {title}**\n\n"
-            f"This alert was triggered because the trend exceeded the configured threshold "
-            f"for {rng.choice([growth rate, engagement velocity, discussion volume, source coverage])}. "
-            f"Specifically, the measured value reached {rng.randint(150, 400)}% of the baseline, "
-            f"crossing the alert boundary.\n\n"
-            f"The content team should review this signal and determine whether immediate action "
-            f"(content creation, campaign adjustment, or editorial escalation) is warranted."
+            "**Alert: " + title + "**\n\n"
+            "This alert was triggered because the trend exceeded the configured threshold "
+            "for " + metric + ". "
+            "Specifically, the measured value reached " + pct + "% of the baseline, "
+            "crossing the alert boundary.\n\n"
+            "The content team should review this signal and determine whether immediate action "
+            "(content creation, campaign adjustment, or editorial escalation) is warranted."
         )
 
     def _gen_generic(self, prompt: str, rng: random.Random) -> str:
+        patterns = str(rng.randint(2, 5))
+        strength = rng.choice(["moderate", "strong", "notable"])
+        hours = rng.choice(["24", "48", "72"])
+
         return (
-            f"Based on the available data, this analysis identifies {rng.randint(2, 5)} key patterns "
-            f"worth noting. The overall signal strength is {rng.choice([moderate, strong, notable])}, "
-            f"suggesting the content/marketing team should monitor developments over the next "
-            f"{rng.choice([24, 48, 72])} hours and prepare responsive content strategies."
+            "Based on the available data, this analysis identifies " + patterns + " key patterns "
+            "worth noting. The overall signal strength is " + strength + ", "
+            "suggesting the content/marketing team should monitor developments over the next "
+            + hours + " hours and prepare responsive content strategies."
         )

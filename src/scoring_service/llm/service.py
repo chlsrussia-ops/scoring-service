@@ -114,7 +114,7 @@ class LlmService:
 
         digest = DigestReport(
             tenant_id=tenant_id,
-            title=f"Content Intelligence Briefing — {now.strftime(%Y-%m-%d)}",
+            title="Content Intelligence Briefing -- " + now.strftime("%Y-%m-%d"),
             summary=gen.output_text,
             top_trends_json=[{"id": t.id, "topic": t.topic, "score": t.score} for t in trends[:5]],
             top_recommendations_json=[{"id": r.id, "title": r.title, "priority": r.priority} for r in recs[:5]],

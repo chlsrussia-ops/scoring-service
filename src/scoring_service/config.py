@@ -116,6 +116,41 @@ class Settings(BaseSettings):
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_allowed_origins.split(",") if o.strip()]
 
+
+    # ── LLM ──────────────────────────────────────────────────────────
+    llm_enabled: bool = True
+    llm_provider: str = "mock"  # "openai" or "mock"
+    llm_api_key: str = ""
+    llm_api_base: str = "https://api.openai.com/v1"
+    llm_model: str = "gpt-4o-mini"
+    llm_max_tokens: int = 1024
+    llm_temperature: float = 0.7
+    llm_timeout: int = 30
+
+    # ── Sources ──────────────────────────────────────────────────────
+    rss_feeds: str = ""
+    reddit_client_id: str = ""
+    reddit_client_secret: str = ""
+    reddit_user_agent: str = "TrendIntel/1.0"
+    reddit_subreddits: str = "technology,marketing,artificial,business"
+
+    # ── Demo ─────────────────────────────────────────────────────────
+    demo_mode: bool = True
+    demo_tenant_id: str = "demo"
+    demo_workspace_id: str = "default"
+
+    # ── Frontend ─────────────────────────────────────────────────────
+    frontend_url: str = "http://localhost:5173"
+
+
+    @property
+    def rss_feed_list(self) -> list[str]:
+        return [u.strip() for u in self.rss_feeds.split(",") if u.strip()]
+
+    @property
+    def reddit_subreddit_list(self) -> list[str]:
+        return [s.strip() for s in self.reddit_subreddits.split(",") if s.strip()]
+
     def validate_config(self) -> list[str]:
         """Fail-fast validation on startup. Returns list of errors."""
         errors: list[str] = []
