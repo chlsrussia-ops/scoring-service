@@ -1,73 +1,268 @@
-"""FastAPI app factory with auth, rate limiting, metrics, DB."""
+"""FastAPI app factory with full production hardening."""
 from __future__ import annotations
+
+import logging
+import sys
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends
-from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+
+from fastapi import Depends, FastAPI, Request
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.responses import Response
+
+from scoring_service.admin.routes import admin_router
+from scoring_service.circuit_breaker import CircuitBreakerRegistry
 from scoring_service.config import Settings
-from scoring_service.diagnostics import configure_logging
-from scoring_service.security import require_api_key
-from scoring_service.rate_limit import enforce_rate_limit
-from scoring_service.services.scoring_service import ScoringService
 from scoring_service.contracts import ScoreRequest
+from scoring_service.correlation import CorrelationMiddleware, get_correlation_id
+from scoring_service.diagnostics import configure_logging
+from scoring_service.idempotency.service import IdempotencyService
+from scoring_service.observability import (
+    OUTBOX_PENDING,
+    REQUEST_COUNTER,
+    SCORE_COUNTER,
+    SCORE_HISTOGRAM,
+    SOURCE_ERRORS,
+    SOURCE_REQUESTS,
+)
+from scoring_service.outbox.service import OutboxService
+from scoring_service.rate_limit import enforce_rate_limit
 from scoring_service.repos.score_repo import ScoreRepository
-from scoring_service.observability import REQUEST_COUNTER, SCORE_COUNTER, SCORE_HISTOGRAM
+from scoring_service.security import check_body_size, require_api_key
+from scoring_service.services.scoring_service import ScoringService
+from scoring_service.source_protection import SourceProtectionService
+
+logger = logging.getLogger("scoring_service")
+
 
 def create_app() -> FastAPI:
     settings = Settings()
+
+    # ── Fail-fast config validation ──
+    config_errors = settings.validate_config()
+    if config_errors and settings.env == "prod":
+        for err in config_errors:
+            print(f"CONFIG ERROR: {err}", file=sys.stderr)
+        sys.exit(1)
+
     configure_logging(settings.log_level, json_logs=settings.log_json)
 
-    app = FastAPI(title=settings.app_name, version="3.0.0")
+    app = FastAPI(title=settings.app_name, version="3.1.0")
     app.state.settings = settings
 
-    # DB setup
+    # ── Correlation middleware ──
+    app.add_middleware(CorrelationMiddleware)
+
+    # ── Circuit breaker registry ──
+    app.state.circuit_registry = CircuitBreakerRegistry(
+        failure_threshold=settings.circuit_breaker_failure_threshold,
+        recovery_timeout=settings.circuit_breaker_recovery_timeout_seconds,
+        half_open_max_calls=settings.circuit_breaker_half_open_max_calls,
+    )
+
+    # ── DB setup ──
     try:
         from scoring_service.db.session import create_session_factory
+
         engine, session_factory = create_session_factory(settings)
         app.state.engine = engine
         app.state.session_factory = session_factory
-    except Exception:
+    except Exception as exc:
+        logger.warning("db_init_failed error=%s", exc)
         app.state.engine = None
         app.state.session_factory = None
 
+    # ── Include admin router ──
+    app.include_router(admin_router)
+
+    # ── Health / Ready / Metrics ──
+
     @app.get("/health")
     async def health():
-        return {"status": "ok", "version": "3.0.0"}
+        return {"status": "ok", "version": "3.1.0"}
 
     @app.get("/ready")
     async def ready():
-        checks = {"db": "ok" if app.state.engine else "unavailable"}
-        return {"status": "ready" if checks["db"] == "ok" else "degraded", "checks": checks}
+        checks: dict = {"db": "ok" if app.state.engine else "unavailable"}
+        if app.state.session_factory:
+            try:
+                db = app.state.session_factory()
+                # Outbox backlog
+                osvc = OutboxService(db, settings)
+                pending = osvc.count_pending()
+                checks["outbox_pending"] = pending
+                if pending > 100:
+                    checks["outbox"] = "backlog"
+
+                # Stale locks
+                from scoring_service.db.models import JobRecord
+                from datetime import datetime, timezone
+
+                now = datetime.now(timezone.utc)
+                stale = (
+                    db.query(JobRecord)
+                    .filter(JobRecord.status == "running", JobRecord.leased_until < now)
+                    .count()
+                )
+                checks["stale_locks"] = stale
+
+                # Quarantined
+                sps = SourceProtectionService(db, settings)
+                quarantined = len(sps.list_quarantined())
+                checks["quarantined_sources"] = quarantined
+
+                db.close()
+            except Exception:
+                checks["db"] = "error"
+
+        overall = "ready"
+        if checks["db"] != "ok":
+            overall = "degraded"
+        elif checks.get("stale_locks", 0) > 0 or checks.get("quarantined_sources", 0) > 0:
+            overall = "degraded"
+        return {"status": overall, "checks": checks}
 
     @app.get("/metrics")
     async def metrics():
         return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
-    @app.post("/v1/score", dependencies=[Depends(require_api_key), Depends(enforce_rate_limit)])
-    async def score(body: ScoreRequest):
+    # ── Score endpoint (backward compatible) ──
+
+    @app.post(
+        "/v1/score",
+        dependencies=[Depends(require_api_key), Depends(enforce_rate_limit), Depends(check_body_size)],
+    )
+    async def score(body: ScoreRequest, request: Request):
         REQUEST_COUNTER.labels(operation="score", status="started").inc()
+        SOURCE_REQUESTS.labels(source=body.source).inc()
+
+        cid = get_correlation_id()
+
+        # ── Source quarantine check ──
+        if app.state.session_factory and settings.enable_source_protection:
+            db = app.state.session_factory()
+            try:
+                sps = SourceProtectionService(db, settings)
+                if sps.is_quarantined(body.source):
+                    db.close()
+                    SOURCE_ERRORS.labels(source=body.source).inc()
+                    return {
+                        "error": "source_quarantined",
+                        "detail": f"Source '{body.source}' is temporarily quarantined",
+                    }
+            finally:
+                db.close()
+
+        # ── Idempotency check ──
+        idempotency_key = request.headers.get("Idempotency-Key")
+        idem_record = None
+
+        if idempotency_key and app.state.session_factory and settings.enable_idempotency:
+            db = app.state.session_factory()
+            try:
+                idem_svc = IdempotencyService(db, settings)
+                existing = idem_svc.check(idempotency_key, "score", body.payload)
+                if existing and existing.status == "completed":
+                    db.close()
+                    logger.info(
+                        "idempotent_hit key=%s cid=%s", idempotency_key, cid
+                    )
+                    return existing.response_body
+                # Start new idempotency record
+                idem_record = idem_svc.start(idempotency_key, "score", body.payload)
+                db.commit()
+            except Exception:
+                db.rollback()
+            finally:
+                db.close()
+
+        # ── Execute scoring ──
         service = ScoringService(settings)
         result, review = service.execute(body)
+
         SCORE_COUNTER.labels(review_label=review.label).inc()
         SCORE_HISTOGRAM.observe(result.final_score)
 
-        # Persist if DB available
+        response_data = {"result": result.model_dump(), "review": review.model_dump()}
+
+        # ── Persist result + outbox in same transaction ──
         if app.state.session_factory:
+            db = app.state.session_factory()
             try:
-                db = app.state.session_factory()
+                # Save score record
                 repo = ScoreRepository(db)
                 repo.save(
-                    request_id=result.request_id, source=result.source,
-                    payload=body.payload, final_score=result.final_score,
-                    capped=result.capped, used_fallback=result.used_fallback,
-                    reason=result.reason, review_label=review.label,
-                    approved=review.approved, diagnostics=list(result.diagnostics))
+                    request_id=result.request_id,
+                    source=result.source,
+                    payload=body.payload,
+                    final_score=result.final_score,
+                    capped=result.capped,
+                    used_fallback=result.used_fallback,
+                    reason=result.reason,
+                    review_label=review.label,
+                    approved=review.approved,
+                    diagnostics=list(result.diagnostics),
+                )
+
+                # Write outbox event in same transaction
+                if settings.enable_outbox:
+                    outbox = OutboxService(db, settings)
+                    outbox.publish(
+                        event_type="score.completed",
+                        aggregate_type="score",
+                        aggregate_id=result.request_id,
+                        payload={
+                            "request_id": result.request_id,
+                            "source": result.source,
+                            "score": result.final_score,
+                            "review_label": review.label,
+                            "approved": review.approved,
+                        },
+                        correlation_id=cid,
+                    )
+
+                # Update idempotency record
+                if idem_record and idempotency_key:
+                    idem_svc2 = IdempotencyService(db, settings)
+                    rec = idem_svc2.check(idempotency_key, "score", body.payload)
+                    if rec:
+                        idem_svc2.complete(rec, 200, response_data)
+
+                # Update source health
+                if settings.enable_source_protection:
+                    sps = SourceProtectionService(db, settings)
+                    if result.ok:
+                        sps.record_success(body.source)
+                    else:
+                        sps.record_failure(body.source, result.reason or "scoring_failure")
+
+                db.commit()
+            except Exception as exc:
+                db.rollback()
+                logger.warning("db_persist_error error=%s cid=%s", str(exc)[:200], cid)
+                # Record failure but don't break the response
+                try:
+                    db2 = app.state.session_factory()
+                    from scoring_service.failures.service import FailureService
+
+                    fsvc = FailureService(db2, settings)
+                    fsvc.record_failure(
+                        entity_type="score",
+                        entity_id=result.request_id,
+                        operation="persist",
+                        error=str(exc)[:500],
+                        correlation_id=cid,
+                    )
+                    db2.commit()
+                    db2.close()
+                except Exception:
+                    pass
+            finally:
                 db.close()
-            except Exception:
-                pass  # DB failure should not break scoring
 
         REQUEST_COUNTER.labels(operation="score", status="completed").inc()
-        return {"result": result.model_dump(), "review": review.model_dump()}
+        return response_data
+
+    # ── List scores (backward compatible) ──
 
     @app.get("/v1/scores")
     async def list_scores():
@@ -77,7 +272,26 @@ def create_app() -> FastAPI:
         repo = ScoreRepository(db)
         records = repo.list_recent(50)
         db.close()
-        return {"records": [{"id": r.id, "request_id": r.request_id, "score": r.final_score,
-                              "label": r.review_label, "approved": r.approved} for r in records]}
+        return {
+            "records": [
+                {
+                    "id": r.id,
+                    "request_id": r.request_id,
+                    "score": r.final_score,
+                    "label": r.review_label,
+                    "approved": r.approved,
+                }
+                for r in records
+            ]
+        }
 
+
+    # ── Stage 3: Platform API routes ──────────────────────
+    from scoring_service.plugins.registry import plugin_registry
+    from scoring_service.plugins.builtin import register_builtins
+    register_builtins(plugin_registry)
+
+    from scoring_service.platform_api.routes import platform_router as plat_router, admin_router as plat_admin_router
+    app.include_router(plat_router)
+    app.include_router(plat_admin_router)
     return app

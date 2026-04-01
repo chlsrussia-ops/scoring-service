@@ -1,3 +1,4 @@
+"""Structured logging and diagnostics with correlation ID support."""
 from __future__ import annotations
 
 import json
@@ -11,12 +12,17 @@ LOGGER_NAME = "scoring_service"
 
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
+        from scoring_service.correlation import get_correlation_id
+
         payload: dict[str, Any] = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
+            "correlation_id": get_correlation_id() or None,
         }
+        if record.exc_info and record.exc_info[1]:
+            payload["exception"] = str(record.exc_info[1])
         return json.dumps(payload, ensure_ascii=False)
 
 

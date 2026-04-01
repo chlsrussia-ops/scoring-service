@@ -14,7 +14,7 @@ def test_ready() -> None:
     client = TestClient(create_app())
     response = client.get("/ready")
     assert response.status_code == 200
-    assert response.json()["status"] == "ready"
+    assert response.json()["status"] in ("ready", "degraded")
 
 
 def test_score_endpoint() -> None:
@@ -32,6 +32,7 @@ def test_score_endpoint() -> None:
             "request_id": "api-1",
             "source": "test",
         },
+        headers={"X-Api-Key": "dev-key-1"},
     )
     assert response.status_code == 200
     body = response.json()

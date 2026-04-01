@@ -1,6 +1,6 @@
 PYTHON ?= python3
 
-.PHONY: install-dev fmt lint typecheck test check run api clean docker-build docker-up docker-down
+.PHONY: install-dev fmt lint typecheck test check run api worker clean docker-build docker-up docker-down migrate
 
 install-dev:
 	$(PYTHON) -m pip install -U pip
@@ -26,6 +26,12 @@ run:
 
 api:
 	uvicorn scoring_service.api.app:create_app --factory --host 0.0.0.0 --port 8000 --reload
+
+worker:
+	$(PYTHON) -m scoring_service.worker
+
+migrate:
+	alembic upgrade head
 
 docker-build:
 	docker build -t scoring-service:latest .

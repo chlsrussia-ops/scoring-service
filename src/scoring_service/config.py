@@ -47,6 +47,33 @@ class Settings(BaseSettings):
     otel_service_name: str = "scoring-service"
     otel_exporter_otlp_endpoint: str = "http://localhost:4317"
     db_echo: bool = False
+    db_pool_size: int = 5
+    db_max_overflow: int = 10
+
+    # Stage 3: Platform settings
+    database_url: str = "postgresql+psycopg://postgres:postgres@localhost:5432/scoring"
+    default_tenant_id: str = "default"
+    default_detector: str = "threshold"
+    default_scorer: str = "default"
+    default_recommender: str = "top_n"
+    default_notifier: str = "log"
+    default_source: str = "demo"
+
+    # Stage 2: Production hardening settings
+    enable_idempotency: bool = True
+    enable_outbox: bool = True
+    enable_source_protection: bool = True
+    circuit_breaker_failure_threshold: int = 5
+    circuit_breaker_recovery_timeout_seconds: int = 30
+    circuit_breaker_half_open_max_calls: int = 3
+    max_body_size: int = 1048576
+    idempotency_ttl_seconds: int = 86400
+
+    def validate_config(self) -> list[str]:
+        errors: list[str] = []
+        if self.min_score >= self.max_score:
+            errors.append("min_score must be less than max_score")
+        return errors
 
     @property
     def api_key_list(self) -> list[str]:
