@@ -114,7 +114,7 @@ class RssSourceProvider(BaseSourceProvider):
         if not self.feeds:
             return SourceTestResult(ok=False, message="No feeds configured")
         try:
-            events, _ = await self._fetch_feed(self.feeds[0])
+            events = await self._fetch_feed(self.feeds[0])
             return SourceTestResult(ok=True, message=f"OK, got {len(events)} items from first feed", items_preview=len(events))
         except Exception as e:
             return SourceTestResult(ok=False, message=f"Feed fetch failed: {e}")

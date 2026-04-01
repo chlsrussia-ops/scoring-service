@@ -1,6 +1,8 @@
-"""Transactional outbox pattern — write side-effects in same transaction."""
+"""Transactional outbox pattern v2 — with dedup_key support."""
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any
@@ -22,6 +24,11 @@ class OutboxService:
         self.db = db
         self.settings = settings
 
+    @staticmethod
+    def compute_dedup_key(event_type: str, aggregate_type: str, aggregate_id: str) -> str:
+        raw = f"{event_type}:{aggregate_type}:{aggregate_id}"
+        return hashlib.sha256(raw.encode()).hexdigest()[:32]
+
     def publish(
         self,
         event_type: str,
@@ -29,22 +36,36 @@ class OutboxService:
         aggregate_id: str,
         payload: dict[str, Any],
         correlation_id: str | None = None,
+        dedup_key: str | None = None,
     ) -> OutboxEvent:
-        """Write event to outbox within current transaction."""
+        """Write event to outbox within current transaction. Dedup prevents duplicates."""
+        key = dedup_key or self.compute_dedup_key(event_type, aggregate_type, aggregate_id)
+
+        # Check for existing event with same dedup_key
+        existing = (
+            self.db.query(OutboxEvent)
+            .filter(OutboxEvent.dedup_key == key)
+            .first()
+        )
+        if existing:
+            logger.debug("outbox_dedup_hit key=%s event_id=%s", key, existing.id)
+            return existing
+
         event = OutboxEvent(
             event_type=event_type,
             aggregate_type=aggregate_type,
             aggregate_id=aggregate_id,
             payload=payload,
             status=PENDING,
+            dedup_key=key,
             correlation_id=correlation_id,
             created_at=datetime.now(timezone.utc),
         )
         self.db.add(event)
         self.db.flush()
         logger.info(
-            "outbox_publish event_id=%s type=%s aggregate=%s/%s",
-            event.id, event_type, aggregate_type, aggregate_id,
+            "outbox_publish event_id=%s type=%s aggregate=%s/%s dedup=%s",
+            event.id, event_type, aggregate_type, aggregate_id, key,
         )
         return event
 
@@ -67,7 +88,7 @@ class OutboxService:
 
     def mark_failed(self, event: OutboxEvent, error: str) -> None:
         event.dispatch_attempts += 1
-        event.dispatch_error = error
+        event.dispatch_error = error[:500]
         if event.dispatch_attempts >= self.settings.outbox_max_dispatch_attempts:
             event.status = FAILED
             logger.warning(
@@ -88,7 +109,7 @@ class OutboxService:
             outbox_event_id=event.id,
             channel=channel,
             status=status,
-            error=error,
+            error=error[:500] if error else None,
             response_code=response_code,
             attempted_at=datetime.now(timezone.utc),
         )
@@ -97,7 +118,6 @@ class OutboxService:
         return attempt
 
     def dispatch_single(self, event_id: int) -> OutboxEvent | None:
-        """Mark a specific event for re-dispatch."""
         event = self.db.query(OutboxEvent).filter(OutboxEvent.id == event_id).first()
         if not event:
             return None

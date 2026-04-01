@@ -19,16 +19,18 @@ def seed():
         from scoring_service.usage.service import UsageService
         UsageService(db).seed_plans()
         db.commit()
+        print("  Plans seeded")
     except Exception as e:
         db.rollback()
         print(f"  Plans: {e}")
     finally:
         db.close()
 
-    # 2. Create tenants
+    # 2. Create tenants (keep existing demo, add default/acme/globex)
     print("Creating tenants...")
     tenants_data = [
         {"id": "default", "name": "Default Tenant", "slug": "default", "plan": "internal"},
+        {"id": "demo", "name": "Demo Tenant", "slug": "demo", "plan": "pro"},
         {"id": "acme", "name": "Acme Corp", "slug": "acme", "plan": "pro"},
         {"id": "globex", "name": "Globex Industries", "slug": "globex", "plan": "team"},
     ]
@@ -37,8 +39,14 @@ def seed():
         try:
             from scoring_service.tenancy.service import TenancyService
             svc = TenancyService(db)
-            if svc.get_tenant(td["id"]):
-                print(f"  Tenant '{td['id']}' exists")
+            existing = svc.get_tenant(td["id"])
+            if existing:
+                # Update plan if needed
+                if existing.plan != td["plan"]:
+                    svc.update_tenant(td["id"], plan=td["plan"])
+                    print(f"  Updated tenant '{td['id']}' plan -> {td['plan']}")
+                else:
+                    print(f"  Tenant '{td['id']}' exists")
                 continue
             svc.create_tenant(**td)
             print(f"  Created tenant: {td['id']}")
@@ -74,6 +82,7 @@ def seed():
     clients = [
         ("default", "dev-key-1", "Legacy Dev Key"),
         ("default", "dev-key-2", "Legacy Dev Key 2"),
+        ("demo", "demo-key-1", "Demo Key"),
         ("acme", "acme-key-1", "Acme Production"),
         ("globex", "globex-key-1", "Globex Production"),
     ]
@@ -83,7 +92,7 @@ def seed():
             from scoring_service.tenancy.service import TenancyService
             svc = TenancyService(db)
             svc.create_api_client(tenant_id, api_key=key, name=name)
-            print(f"  Created client: {key}")
+            print(f"  Created client: {key} -> {tenant_id}")
         except Exception as e:
             db.rollback()
         finally:
@@ -141,7 +150,7 @@ def seed():
     from scoring_service.pipeline.orchestrator import PipelineOrchestrator
     from scoring_service.usage.service import UsageService
 
-    for tenant_id in ["default", "acme", "globex"]:
+    for tenant_id in ["default", "demo", "acme", "globex"]:
         db = SF()
         try:
             orch = PipelineOrchestrator(db, plugin_registry)
@@ -156,7 +165,7 @@ def seed():
         finally:
             db.close()
 
-    print("Seed completed!")
+    print("\nSeed completed!")
 
 
 if __name__ == "__main__":

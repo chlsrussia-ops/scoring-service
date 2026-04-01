@@ -40,9 +40,10 @@ from scoring_service.platform_contracts import (
     WorkspaceOut,
 )
 from scoring_service.tenancy.context import TenantContext, get_admin_context, get_tenant_context
+from scoring_service.rate_limit import enforce_rate_limit
 
 platform_router = APIRouter(prefix="/v1", tags=["platform"])
-admin_router = APIRouter(prefix="/v1/admin", tags=["admin"])
+platform_admin_router = APIRouter(prefix="/v1/platform/admin", tags=["platform-admin"])
 
 
 def _get_db(request: Request):
@@ -662,7 +663,7 @@ def list_plans(
 
 # ══ Admin Routes ═══════════════════════════════════════════════════
 
-@admin_router.get("/diagnostics")
+@platform_admin_router.get("/diagnostics")
 def admin_diagnostics(
     request: Request,
     ctx: TenantContext = Depends(get_admin_context),
@@ -706,7 +707,7 @@ def admin_diagnostics(
     }
 
 
-@admin_router.get("/usage/all")
+@platform_admin_router.get("/usage/all")
 def admin_usage_all(
     request: Request,
     ctx: TenantContext = Depends(get_admin_context),

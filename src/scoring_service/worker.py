@@ -1,29 +1,35 @@
-"""Background worker — processes jobs, dispatches outbox, recovers stale locks."""
+"""Background worker v2 — graceful drain, heartbeat, per-source circuit breakers."""
 from __future__ import annotations
 
 import logging
+import os
 import signal
 import time
-from datetime import datetime, timezone
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 
 from scoring_service.circuit_breaker import CircuitBreakerError, CircuitBreakerRegistry
 from scoring_service.config import Settings
+from scoring_service.correlation import new_correlation_id, set_correlation_id
 from scoring_service.db.session import create_session_factory
 from scoring_service.diagnostics import configure_logging
 from scoring_service.failures.service import FailureService
 from scoring_service.jobs.service import JobService
 from scoring_service.observability import (
     JOB_COMPLETED,
-    JOB_ENQUEUED,
     JOB_PROCESSING_SECONDS,
+    JOB_QUEUE_DEPTH,
     JOB_RETRIES,
     OUTBOX_DISPATCHED,
     OUTBOX_FAILED,
+    OUTBOX_PENDING,
 )
 from scoring_service.outbox.dispatcher import WebhookDispatcher
 from scoring_service.outbox.service import OutboxService
 
 logger = logging.getLogger("scoring_service")
+
+HEARTBEAT_FILE = "/tmp/scoring-worker-heartbeat"
 
 # ── Job handlers registry ────────────────────────────────────────────
 
@@ -39,7 +45,6 @@ def register_handler(job_type: str):
 
 @register_handler("score.analyze")
 def handle_score_analyze(payload: dict, settings: Settings) -> dict:
-    """Example job handler for async scoring analysis."""
     from scoring_service.contracts import ScoreRequest
     from scoring_service.services.scoring_service import ScoringService
 
@@ -59,16 +64,35 @@ def handle_score_analyze(payload: dict, settings: Settings) -> dict:
 
 @register_handler("noop")
 def handle_noop(payload: dict, settings: Settings) -> dict:
-    """Test job that does nothing."""
     return {"status": "ok"}
 
 
-# ── Worker loop ──────────────────────────────────────────────────────
+@register_handler("outbox.replay_failed")
+def handle_outbox_replay(payload: dict, settings: Settings) -> dict:
+    """Re-dispatch all failed outbox events."""
+    return {"status": "dispatched_by_normal_cycle"}
+
+
+# ── Worker ───────────────────────────────────────────────────────────
+
+@contextmanager
+def _db_session(session_factory):
+    db = session_factory()
+    try:
+        yield db
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
 
 class Worker:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self._running = True
+        self._draining = False
         self._engine, self._session_factory = create_session_factory(settings)
         self._dispatcher = WebhookDispatcher(settings)
         self._circuit_registry = CircuitBreakerRegistry(
@@ -78,35 +102,55 @@ class Worker:
         )
 
     def stop(self, *_args) -> None:
-        logger.info("worker_shutdown_requested")
-        self._running = False
+        if self._draining:
+            logger.warning("worker_force_stop (second signal)")
+            self._running = False
+            return
+        logger.info("worker_drain_requested (finishing current batch, send again to force)")
+        self._draining = True
+
+    def _write_heartbeat(self) -> None:
+        try:
+            with open(HEARTBEAT_FILE, "w") as f:
+                f.write(datetime.now(timezone.utc).isoformat())
+        except OSError:
+            pass
 
     def run(self) -> None:
         signal.signal(signal.SIGTERM, self.stop)
         signal.signal(signal.SIGINT, self.stop)
-        logger.info("worker_started")
+        logger.info("worker_started pid=%s", os.getpid())
 
         cycle = 0
-        while self._running:
+        while self._running and not self._draining:
             cycle += 1
+            cid = new_correlation_id()
             try:
                 self._process_jobs()
                 self._dispatch_outbox()
-                if cycle % 12 == 0:  # every ~minute
+                if cycle % 12 == 0:
                     self._recover_stale()
                     self._cleanup_idempotency()
+                self._write_heartbeat()
+                self._update_gauges()
             except Exception as exc:
-                logger.exception("worker_cycle_error error=%s", str(exc)[:300])
+                logger.exception("worker_cycle_error cycle=%s error=%s cid=%s", cycle, str(exc)[:300], cid)
 
             time.sleep(self.settings.job_poll_interval_seconds)
 
+        if self._draining:
+            logger.info("worker_draining (completing in-flight work)")
+            try:
+                self._process_jobs()
+                self._dispatch_outbox()
+            except Exception:
+                pass
         logger.info("worker_stopped")
 
     def _process_jobs(self) -> None:
         if not self.settings.enable_jobs:
             return
-        db = self._session_factory()
-        try:
+        with _db_session(self._session_factory) as db:
             svc = JobService(db, self.settings)
             for _ in range(self.settings.job_batch_size):
                 job = svc.acquire_next()
@@ -116,9 +160,9 @@ class Worker:
                 handler = JOB_HANDLERS.get(job.job_type)
                 if not handler:
                     svc.fail(job, f"unknown job type: {job.job_type}")
-                    db.commit()
                     continue
 
+                set_correlation_id(job.correlation_id or new_correlation_id())
                 start_time = time.time()
                 try:
                     result = handler(job.payload, self.settings)
@@ -131,101 +175,75 @@ class Worker:
                     JOB_COMPLETED.labels(job_type=job.job_type, status="failed").inc()
                     JOB_RETRIES.labels(job_type=job.job_type).inc()
 
-                    # Dead letter if terminal
                     if job.status == "dead":
                         fsvc = FailureService(db, self.settings)
                         fsvc.to_dead_letter(
-                            source_type="job",
-                            source_id=str(job.id),
-                            operation=job.job_type,
-                            payload_snapshot=job.payload,
-                            error=str(exc)[:500],
-                            correlation_id=job.correlation_id,
+                            source_type="job", source_id=str(job.id),
+                            operation=job.job_type, payload_snapshot=job.payload,
+                            error=str(exc)[:500], correlation_id=job.correlation_id,
                         )
-                db.commit()
-        except Exception as exc:
-            db.rollback()
-            logger.exception("job_processing_error error=%s", str(exc)[:300])
-        finally:
-            db.close()
 
     def _dispatch_outbox(self) -> None:
         if not self.settings.enable_outbox:
             return
-        db = self._session_factory()
-        try:
+        with _db_session(self._session_factory) as db:
             svc = OutboxService(db, self.settings)
             events = svc.fetch_pending()
             for event in events:
-                cb = self._circuit_registry.get("webhook")
+                channel = event.payload.get("_channel", "webhook")
+                cb = self._circuit_registry.get(f"dispatch:{channel}")
                 try:
-                    success, code, error = cb.call(
-                        self._dispatcher.deliver, event.payload
-                    )
+                    success, code, error = cb.call(self._dispatcher.deliver, event.payload)
                 except CircuitBreakerError as cbe:
                     svc.mark_failed(event, str(cbe))
-                    svc.record_delivery_attempt(
-                        event, "webhook", "circuit_open", str(cbe)
-                    )
+                    svc.record_delivery_attempt(event, channel, "circuit_open", str(cbe))
                     OUTBOX_FAILED.inc()
+                    logger.warning("outbox_circuit_open event_id=%s channel=%s", event.id, channel)
                     continue
 
                 if success:
                     svc.mark_dispatched(event)
-                    svc.record_delivery_attempt(event, "webhook", "delivered", response_code=code)
+                    svc.record_delivery_attempt(event, channel, "delivered", response_code=code)
                     OUTBOX_DISPATCHED.inc()
                 else:
                     svc.mark_failed(event, error or "unknown")
-                    svc.record_delivery_attempt(
-                        event, "webhook", "failed", error, response_code=code
-                    )
+                    svc.record_delivery_attempt(event, channel, "failed", error, response_code=code)
                     OUTBOX_FAILED.inc()
 
-                    # Dead letter if max attempts reached
                     if event.status == "failed":
                         fsvc = FailureService(db, self.settings)
                         fsvc.to_dead_letter(
-                            source_type="outbox",
-                            source_id=str(event.id),
-                            operation=event.event_type,
-                            payload_snapshot=event.payload,
-                            error=error or "dispatch_failed",
-                            correlation_id=event.correlation_id,
+                            source_type="outbox", source_id=str(event.id),
+                            operation=event.event_type, payload_snapshot=event.payload,
+                            error=error or "dispatch_failed", correlation_id=event.correlation_id,
                         )
-            db.commit()
-        except Exception as exc:
-            db.rollback()
-            logger.exception("outbox_dispatch_error error=%s", str(exc)[:300])
-        finally:
-            db.close()
 
     def _recover_stale(self) -> None:
-        db = self._session_factory()
-        try:
+        with _db_session(self._session_factory) as db:
             svc = JobService(db, self.settings)
             count = svc.recover_stale_locks()
             if count:
-                db.commit()
                 logger.info("stale_recovery count=%s", count)
-        except Exception as exc:
-            db.rollback()
-            logger.exception("stale_recovery_error error=%s", str(exc)[:300])
-        finally:
-            db.close()
 
     def _cleanup_idempotency(self) -> None:
-        db = self._session_factory()
-        try:
+        with _db_session(self._session_factory) as db:
             from scoring_service.idempotency.service import IdempotencyService
             svc = IdempotencyService(db, self.settings)
             count = svc.cleanup_expired()
             if count:
                 logger.info("idempotency_cleanup count=%s", count)
-        except Exception as exc:
-            db.rollback()
-            logger.exception("idempotency_cleanup_error error=%s", str(exc)[:300])
-        finally:
-            db.close()
+
+    def _update_gauges(self) -> None:
+        try:
+            with _db_session(self._session_factory) as db:
+                job_svc = JobService(db, self.settings)
+                counts = job_svc.count_by_status()
+                JOB_QUEUE_DEPTH.set(counts.get("queued", 0) + counts.get("retrying", 0))
+
+                outbox_svc = OutboxService(db, self.settings)
+                OUTBOX_PENDING.set(outbox_svc.count_pending())
+        except Exception:
+            pass
 
 
 def run_worker() -> None:

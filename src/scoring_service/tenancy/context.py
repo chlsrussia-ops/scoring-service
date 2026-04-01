@@ -111,9 +111,20 @@ async def get_admin_context(
     request: Request,
     x_api_key: str | None = Header(default=None),
 ) -> TenantContext:
-    """Admin context — requires admin API key."""
+    """Admin context — requires dedicated admin API key or legacy dev keys."""
     settings = request.app.state.settings
-    if x_api_key and x_api_key in settings.api_key_list:
+    # Accept dedicated admin key
+    if x_api_key and x_api_key == settings.admin_api_key:
+        return TenantContext(
+            tenant_id="__admin__",
+            tenant_name="Admin",
+            workspace_id=None,
+            plan="internal",
+            settings={},
+            is_admin=True,
+        )
+    # Also accept legacy dev keys for backward compat in dev mode
+    if x_api_key and x_api_key in settings.api_key_list and settings.env != "prod":
         return TenantContext(
             tenant_id="__admin__",
             tenant_name="Admin",
