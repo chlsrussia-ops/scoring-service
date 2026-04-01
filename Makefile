@@ -47,3 +47,19 @@ clean:
 	find . -type d -name ".pytest_cache" -prune -exec rm -rf {} +
 	find . -type d -name ".mypy_cache" -prune -exec rm -rf {} +
 	rm -f .coverage coverage.xml
+
+# ── Schema management ────────────────────────────────────────────
+schema-check:
+	alembic check
+
+schema-audit:
+	$(PYTHON) -m pytest tests/test_migrations.py -v
+
+schema-bootstrap:
+	alembic upgrade head
+
+schema-history:
+	alembic history --verbose
+
+test-migrations:
+	$(PYTHON) -m pytest tests/test_migrations.py tests/test_adaptation.py -v

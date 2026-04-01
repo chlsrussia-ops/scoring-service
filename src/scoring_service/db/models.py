@@ -28,6 +28,9 @@ class Base(DeclarativeBase):
 
 class ScoreRecord(Base):
     __tablename__ = "score_records"
+    __table_args__ = (
+        Index("ix_score_records_created_at", "created_at"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     request_id: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
@@ -126,6 +129,7 @@ class OutboxEvent(Base):
     __table_args__ = (
         Index("ix_outbox_status", "status"),
         Index("ix_outbox_created", "created_at"),
+        Index("ix_outbox_dedup_key", "dedup_key"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
