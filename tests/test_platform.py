@@ -154,13 +154,13 @@ class TestPlugins:
 
     def test_spike_detector(self):
         detector = SpikeDetector()
-        items = [
-            {"topic": "X", "category": "c", "source": "s", "value": 1},
-        ] * 10 + [
-            {"topic": "Y", "category": "c", "source": "s", "value": 1},
-        ]
+        # X=10, Y=1, Z=1 -> baseline=12/3=4, threshold=4*2=8, X=10>=8 -> spike
+        items = (
+            [{"topic": "X", "category": "c", "source": "s", "value": 1}] * 10
+            + [{"topic": "Y", "category": "c", "source": "s", "value": 1}]
+            + [{"topic": "Z", "category": "c", "source": "s", "value": 1}]
+        )
         trends = detector.detect(items, {"spike_ratio": 2.0})
-        # X has 10 events vs baseline ~5.5, should spike
         topics = [t["topic"] for t in trends]
         assert "X" in topics
 
