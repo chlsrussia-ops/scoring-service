@@ -4,10 +4,10 @@ services:
     container_name: scoring-db
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_PASSWORD: d6093ab132dc805837f7cb42df35dcb1
       POSTGRES_DB: scoring
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -21,11 +21,11 @@ services:
     build: .
     container_name: scoring-service
     ports:
-      - "8020:8000"
+      - "127.0.0.1:8020:8000"
     env_file:
       - .env
     environment:
-      SCORING_DATABASE_URL: postgresql+psycopg://postgres:postgres@db:5432/scoring
+      SCORING_DATABASE_URL: postgresql+psycopg://postgres:d6093ab132dc805837f7cb42df35dcb1@db:5432/scoring
     depends_on:
       db:
         condition: service_healthy
@@ -40,7 +40,7 @@ services:
     build: ./frontend
     container_name: scoring-frontend
     ports:
-      - "5173:80"
+      - "127.0.0.1:5173:80"
     depends_on:
       - scoring-service
     restart: unless-stopped
