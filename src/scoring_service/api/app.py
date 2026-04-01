@@ -347,6 +347,17 @@ def create_app() -> FastAPI:
 
 
 
+
+    # ── Stage 8: Data Contracts Registry ──
+    try:
+        from scoring_service.contracts_registry.domain_contracts import register_all_contracts
+        count = register_all_contracts()
+        from scoring_service.contracts_registry.routes import contracts_router
+        app.include_router(contracts_router)
+        logger.info("contracts_registry_registered contracts=%d", count)
+    except ImportError as exc:
+        logger.warning("contracts_registry_not_available error=%s", exc)
+
     # ── Stage 7: Workflow Orchestration ──
     try:
         from scoring_service.workflows.definitions import register_builtin_workflows
