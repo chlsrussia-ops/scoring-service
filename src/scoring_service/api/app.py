@@ -345,6 +345,15 @@ def create_app() -> FastAPI:
         logger.warning("platform_api_not_available error=%s", exc)
 
 
+
+    # ── Stage 6: Ranking Evaluation Framework ──
+    try:
+        from scoring_service.evaluation.routes import eval_router
+        app.include_router(eval_router)
+        logger.info("evaluation_api_registered routes=eval")
+    except ImportError as exc:
+        logger.warning("evaluation_api_not_available error=%s", exc)
+
     # ── Stage 5: Adaptation & Self-Improving System ──
     try:
         from scoring_service.adaptation.routes import adaptation_router, adaptation_admin_router
