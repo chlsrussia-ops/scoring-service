@@ -346,6 +346,18 @@ def create_app() -> FastAPI:
 
 
 
+
+    # ── Stage 7: Workflow Orchestration ──
+    try:
+        from scoring_service.workflows.definitions import register_builtin_workflows
+        register_builtin_workflows()
+        from scoring_service.workflows.routes import workflow_router, workflow_admin_router
+        app.include_router(workflow_router)
+        app.include_router(workflow_admin_router)
+        logger.info("workflow_api_registered")
+    except ImportError as exc:
+        logger.warning("workflow_api_not_available error=%s", exc)
+
     # ── Stage 6: Ranking Evaluation Framework ──
     try:
         from scoring_service.evaluation.routes import eval_router
