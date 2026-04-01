@@ -35,6 +35,13 @@ HEARTBEAT_FILE = "/tmp/scoring-worker-heartbeat"
 
 JOB_HANDLERS: dict[str, callable] = {}
 
+# Register adaptation job handlers
+try:
+    from scoring_service.adaptation.jobs import ADAPTATION_JOB_HANDLERS
+    JOB_HANDLERS.update(ADAPTATION_JOB_HANDLERS)
+except ImportError:
+    pass
+
 
 def register_handler(job_type: str):
     def decorator(fn):

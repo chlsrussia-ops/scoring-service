@@ -104,3 +104,14 @@ async def generate_all_narratives(request: Request) -> dict:
         return await runner.generate_ai()
     finally:
         db.close()
+
+
+@router.post("/seed-adaptation")
+async def seed_adaptation(request: Request) -> dict:
+    db = _get_db(request)
+    settings: Settings = request.app.state.settings
+    try:
+        from scoring_service.adaptation.seed import seed_adaptation_demo
+        return seed_adaptation_demo(db, settings)
+    finally:
+        db.close()

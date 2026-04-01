@@ -42,4 +42,35 @@ export const api = {
   demoDispatchAlerts: () => request<any>('/v1/demo/dispatch-alerts', { method: 'POST' }),
   demoRunAll: () => request<any>('/v1/demo/run-all', { method: 'POST' }),
   demoStatus: () => request<any>('/v1/demo/status'),
+
+// Adaptation
+  adaptationStatus: (tid = 'demo') => request<any>(`/v1/adaptation/status?tenant_id=${tid}`),
+  evaluationScorecards: (tid = 'demo') => request<any>(`/v1/evaluation/scorecards?tenant_id=${tid}`),
+  sourceLearning: (tid = 'demo') => request<any>(`/v1/source-learning/summary?tenant_id=${tid}`),
+  listGoals: (tid = 'demo') => request<any>(`/v1/goals?tenant_id=${tid}`),
+  listExperiments: (tid = 'demo') => request<any>(`/v1/experiments?tenant_id=${tid}`),
+  adaptationProposals: () => request<any>('/v1/admin/adaptation/proposals', {
+    headers: { 'x-admin-key': 'admin-secret-key' },
+  }),
+  goalPerformance: () => request<any>('/v1/admin/adaptation/goal-performance', {
+    headers: { 'x-admin-key': 'admin-secret-key' },
+  }),
+  approveProposal: (id: number) => request<any>(`/v1/admin/adaptation/proposals/${id}/approve`, {
+    method: 'POST', headers: { 'x-admin-key': 'admin-secret-key' },
+    body: JSON.stringify({ actor: 'ui_admin' }),
+  }),
+  rejectProposal: (id: number) => request<any>(`/v1/admin/adaptation/proposals/${id}/reject`, {
+    method: 'POST', headers: { 'x-admin-key': 'admin-secret-key' },
+    body: JSON.stringify({ actor: 'ui_admin' }),
+  }),
+  applyProposal: (id: number) => request<any>(`/v1/admin/adaptation/proposals/${id}/apply`, {
+    method: 'POST', headers: { 'x-admin-key': 'admin-secret-key' },
+  }),
+  simulateProposal: (id: number) => request<any>(`/v1/admin/adaptation/proposals/${id}/simulate`, {
+    method: 'POST', headers: { 'x-admin-key': 'admin-secret-key' },
+  }),
+  rollbackProposal: (id: number) => request<any>(`/v1/admin/adaptation/rollbacks/${id}/execute`, {
+    method: 'POST', headers: { 'x-admin-key': 'admin-secret-key' },
+  }),
+  seedAdaptation: () => request<any>('/v1/demo/seed-adaptation', { method: 'POST' }),
 };

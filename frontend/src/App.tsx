@@ -9,6 +9,12 @@ import Alerts from './pages/Alerts';
 import Sources from './pages/Sources';
 import Digests from './pages/Digests';
 import Demo from './pages/Demo';
+import AdaptationOverview from './pages/adaptation/AdaptationOverview';
+import QualityPage from './pages/adaptation/QualityPage';
+import ProposalsPage from './pages/adaptation/ProposalsPage';
+import GoalsPage from './pages/adaptation/GoalsPage';
+import ExperimentsPage from './pages/adaptation/ExperimentsPage';
+import SourceTrustPage from './pages/adaptation/SourceTrustPage';
 
 export default function App() {
   return (
@@ -23,6 +29,12 @@ export default function App() {
           <Route path="/sources" element={<Sources />} />
           <Route path="/digests" element={<Digests />} />
           <Route path="/demo" element={<Demo />} />
+          <Route path="/adaptation" element={<AdaptationOverview />} />
+          <Route path="/adaptation/quality" element={<QualityPage />} />
+          <Route path="/adaptation/proposals" element={<ProposalsPage />} />
+          <Route path="/adaptation/goals" element={<GoalsPage />} />
+          <Route path="/adaptation/experiments" element={<ExperimentsPage />} />
+          <Route path="/adaptation/sources" element={<SourceTrustPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </Layout>

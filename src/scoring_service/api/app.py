@@ -344,4 +344,14 @@ def create_app() -> FastAPI:
     except ImportError as exc:
         logger.warning("platform_api_not_available error=%s", exc)
 
+
+    # ── Stage 5: Adaptation & Self-Improving System ──
+    try:
+        from scoring_service.adaptation.routes import adaptation_router, adaptation_admin_router
+        app.include_router(adaptation_router)
+        app.include_router(adaptation_admin_router)
+        logger.info('adaptation_api_registered routes=adaptation+admin')
+    except ImportError as exc:
+        logger.warning('adaptation_api_not_available error=%s', exc)
+
     return app

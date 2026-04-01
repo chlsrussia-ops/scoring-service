@@ -170,3 +170,50 @@ class Settings(BaseSettings):
         if self.circuit_breaker_failure_threshold < 1:
             errors.append("SCORING_CIRCUIT_BREAKER_FAILURE_THRESHOLD must be >= 1")
         return errors
+
+    # ── Adaptation & Self-Improvement ────────────────────────────────
+    adaptation_enabled: bool = True
+    adaptation_mode: str = "suggest_only"  # observe_only / suggest_only / auto_safe / auto_safe_with_audit / approval_required
+    adaptation_schedule_seconds: int = 3600  # how often to run evaluation
+    adaptation_min_samples: int = 20  # minimum feedback/outcomes before adapting
+    adaptation_max_delta_per_update: float = 0.15  # max change per parameter per update (15%)
+    adaptation_rollback_on_degradation: bool = True
+    adaptation_degradation_threshold: float = 0.10  # 10% degradation triggers rollback
+    adaptation_canary_for_risky: bool = True
+    adaptation_protected_metrics: str = "alert_precision,recommendation_usefulness"  # comma-separated
+
+    # ── Adaptive Scoring Bounds ──────────────────────────────────────
+    adaptive_weight_min: float = 0.1
+    adaptive_weight_max: float = 3.0
+    adaptive_source_trust_min: float = 0.1
+    adaptive_source_trust_max: float = 2.0
+    adaptive_threshold_delta_max: float = 20.0  # max absolute threshold change
+
+    # ── Evaluation Windows ───────────────────────────────────────────
+    evaluation_windows: str = "24h,7d,30d"
+    evaluation_min_sample_threshold: int = 10
+
+    # ── Goal Optimization ────────────────────────────────────────────
+    goal_optimization_enabled: bool = True
+    goal_max_concurrent_optimizations: int = 5
+    goal_multi_metric_constraint: bool = True  # don't optimize one metric at cost of others
+
+    # ── Experimentation ──────────────────────────────────────────────
+    experiment_enabled: bool = True
+    experiment_max_concurrent: int = 3
+    experiment_default_degradation_threshold: float = 0.05
+    experiment_min_items_for_verdict: int = 50
+
+    # ── Source Learning ──────────────────────────────────────────────
+    source_learning_enabled: bool = True
+    source_learning_ewma_alpha: float = 0.1  # exponentially weighted moving average factor
+    source_learning_min_samples: int = 10
+    source_trust_change_max_per_update: float = 0.1  # max trust change per update cycle
+
+    @property
+    def protected_metric_list(self) -> list[str]:
+        return [m.strip() for m in self.adaptation_protected_metrics.split(",") if m.strip()]
+
+    @property
+    def evaluation_window_list(self) -> list[str]:
+        return [w.strip() for w in self.evaluation_windows.split(",") if w.strip()]
