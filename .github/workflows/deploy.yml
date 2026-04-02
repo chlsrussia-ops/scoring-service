@@ -1,0 +1,22 @@
+name: Deploy Scoring Service
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to server
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            cd /opt/scoring-service
+            sudo git -C /opt/scoring-service pull origin main
+            .venv/bin/pip install -e ".[dev]" --quiet 2>/dev/null || .venv/bin/pip install -r requirements.txt --quiet
+            sudo systemctl restart scoring-worker
+            echo "✅ Scoring Service deployed"
